@@ -1,0 +1,18 @@
+const icons: Record<string, string> = {
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/><rect x="3" y="14" width="7" height="7" rx="1.4"/><rect x="14" y="14" width="7" height="7" rx="1.4"/>',
+  activity: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  box: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 9v12"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.9l.06.06-1.8 1.8-.06-.06A1.7 1.7 0 0 0 16 18.4a1.7 1.7 0 0 0-1 1.57V21h-2.5v-.95a1.7 1.7 0 0 0-1-1.57 1.7 1.7 0 0 0-1.9.34l-.06.06-1.8-1.8.06-.06A1.7 1.7 0 0 0 8.1 15a1.7 1.7 0 0 0-1.57-1H5.5v-2.5h1.03a1.7 1.7 0 0 0 1.57-1 1.7 1.7 0 0 0-.34-1.9L7.7 8.54l1.8-1.8.06.06A1.7 1.7 0 0 0 11.5 7a1.7 1.7 0 0 0 1-1.57V4.5H15v.93A1.7 1.7 0 0 0 16 7a1.7 1.7 0 0 0 1.9-.34l.06-.06 1.8 1.8-.06.06A1.7 1.7 0 0 0 19.4 10a1.7 1.7 0 0 0 1.57 1H22v2.5h-1.03A1.7 1.7 0 0 0 19.4 15Z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  arrow: '<path d="m5 12 14 0m-6-6 6 6-6 6"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  bolt: '<path d="m13 2-9 12h7l-1 8 10-12h-7z"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  pause: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
+  play: '<path d="m7 4 13 8-13 8z"/>',
+  terminal: '<rect x="2.5" y="3.5" width="19" height="17" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/>',
+  layers: '<path d="m12 2 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 17l9 5 9-5"/>',
+  spark: '<path d="m12 2 1.9 7.1L21 11l-7.1 1.9L12 20l-1.9-7.1L3 11l7.1-1.9L12 2ZM19 18l.7 2.3L22 21l-2.3.7L19 24l-.7-2.3L16 21l2.3-.7L19 18Z"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+};
+export const icon = (name: string, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] ?? icons.box}</svg>`;
