@@ -2,13 +2,15 @@
 
 **Purpose:** a local visual workspace for monitoring AI-agent activity, with a separate Admin dashboard and paired read-only Visual Display.
 
-**Current state:** Milestones 1–2 are implemented in this worktree. A Fastify service owns the shared state, persists revisions/activity in SQLite, authenticates the single owner, pairs read-only display sessions, and accepts scoped bearer agent commands. Hermes itself is not integrated. Simulated agent activity is available only with `GLIMPSE_DEMO=1`; otherwise the workspace starts inactive.
+**Current state:** Milestones 1–3 are implemented in this worktree. A Fastify service owns shared state, persists it in SQLite, authenticates the single owner, pairs read-only display sessions, and accepts scoped bearer agent commands. The Display presents backend-owned idle/thinking/tool-use/responding/waiting/completed/error states, validated progress, clear connection status, and a persistent Quiet/Ambient style selected in Admin Settings. Hermes itself is not integrated. Simulated agent activity is available only with `GLIMPSE_DEMO=1`; otherwise the workspace starts inactive.
 
 ## What is present
 
 - **Admin (`/admin`):** Overview, Widgets, Activity, and Settings. Requires owner authentication.
 - **Visual Display (`/`, `/display`):** separate read-only session; pairing codes are one-time and sessions can be revoked.
 - **Demo adapter:** preserves seeded activity, `Hermes (Demo)`, allowed sample commands, and 12-second simulated updates when explicitly enabled.
+- **Agent visualization:** explicit backend-driven activity states and validated transitions; no percentage is shown when progress is unknown. Reduced-motion is honored.
+- **Display style:** owner-configurable Quiet status or Ambient activity; preference persists across restart and updates paired displays.
 - **Protocol v1:** bounded Zod schemas for state, snapshots, commands, structured errors, and WebSocket messages.
 - **Backend:** loopback-only Fastify API, SQLite state/revision/activity persistence, authenticated HTTP mutations, and read-only snapshot/update WebSockets.
 - **Security:** bootstrap-secret first-run setup, scrypt password hashing, hashed opaque session and agent credentials, SameSite/HttpOnly cookies, CSRF and exact loopback Origin checks, rate/body/frame bounds, session expiry/revocation, and redacted credential headers.
@@ -42,7 +44,7 @@ The backend is a single local process. Plain loopback HTTP is not encrypted. Do 
 
 - Hermes/other real agent adapter; no external agent is connected automatically.
 - TLS, LAN/remote access, multi-user administration, or multi-instance operation.
-- The richer normalized visualization state machine, modular widget system, and widget ownership lifecycle in later milestones.
+- A modular widget system and widget ownership lifecycle.
 - Full schema migration history beyond initial SQLite initialization.
 
 See [README.md](README.md), the [roadmap](docs/plans/2026-10-29-glimpse-dock-roadmap.md), [architecture decision](docs/architecture/0001-local-backend-authority.md), [protocol](docs/protocol/protocol-v1.md), and [security notes](docs/security/local-deployment.md).

@@ -4,7 +4,11 @@ The browser and local Fastify service exchange JSON over same-origin HTTP and We
 
 ## State and events
 
-`ProtocolStateSchema` in `src/shared/protocol.ts` bounds agent/task text, widgets (32), and activity (40 entries). A state envelope is `{ v: 1, type: "snapshot" | "state", revision, source: "demo" | "owner" | "agent", state }`. Revisions increase only after a SQLite transaction persists state/revision/activity. WebSocket `/api/stream` sends the current snapshot on connect and full state envelopes thereafter; clients reconnect with bounded backoff and obtain a fresh snapshot. WebSocket is read-only.
+`ProtocolStateSchema` in `src/shared/protocol.ts` bounds agent/task text, widgets (32), and activity history (40 entries). State includes `activity` (`idle`, `thinking`, `tool-use`, `responding`, `waiting`, `completed`, `error`), `displayStyle` (`quiet` or `ambient`), and `progress` (`0..100` or `null` when unknown). Missing activity/style fields in legacy persisted state default to `idle`/`quiet`; missing or cleared progress defaults to `null`.
+
+A state envelope is `{ v: 1, type: "snapshot" | "state", revision, source: "demo" | "owner" | "agent", state }`. Revisions increase only after a SQLite transaction persists state/revision/activity. WebSocket `/api/stream` sends the current snapshot on connect and full state envelopes thereafter; clients reconnect with bounded backoff and obtain a fresh snapshot. WebSocket is read-only.
+
+Activity transitions are validated by the backend. `idle` can remain idle or start thinking, wait, or error; active phases (`thinking`, `tool-use`, `responding`, `waiting`) can move among active phases or finish/error; `completed`/`error` remain terminal or start a new task through idle/thinking.
 
 ## Commands
 
@@ -13,8 +17,10 @@ Commands are strict `{ v: 1, requestId, type, payload }` objects. Current types 
 | Type | Payload | Permission / behavior |
 | --- | --- | --- |
 | `task.update` | `{ task: string }` | Owner or valid agent |
-| `task.complete` | `{}` | Owner or valid agent |
-| `state.set-progress` | `{ progress: 0..100 }` | Owner or valid agent |
+| `task.complete` | `{}` | Owner or valid agent; sets activity `completed`, progress `100` |
+| `state.set-activity` | `{ activity: Activity }` | Owner or valid agent; transition must be allowed |
+| `state.set-progress` | `{ progress: 0..100 | null }` | Owner or valid agent; `null` clears unknown progress |
+| `display.set-style` | `{ style: "quiet" | "ambient" }` | Owner only |
 | `metric.set-value` | `{ id: "tasks" | "tools", value: integer }` | Owner or valid agent; target must exist |
 | `demo.simulate` | `{}` | Owner, only when Demo is enabled; server scheduler uses same boundary |
 | `demo.set-enabled` | `{ enabled: boolean }` | Owner, only when Demo is enabled |
