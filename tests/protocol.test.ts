@@ -37,7 +37,8 @@ describe('protocol v1', () => {
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...state, activity: 'thinking', displayStyle: 'ambient' } }).success).toBe(true);
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...state, activity: 'invented' } }).success).toBe(false);
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...state, displayStyle: 'neon' } }).success).toBe(false);
-    const legacy = ProtocolStateSchema.safeParse(state);
+    const { activity: _activity, displayStyle: _displayStyle, ...legacyState } = state;
+    const legacy = ProtocolStateSchema.safeParse(legacyState);
     expect(legacy.success && legacy.data).toMatchObject({ activity: 'idle', displayStyle: 'quiet' });
     expect(ProtocolStateSchema.parse({ ...state, progress: 35 }).progress).toBe(35);
     expect(ProtocolStateSchema.parse({ ...state, progress: null }).progress).toBeNull();

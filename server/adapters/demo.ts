@@ -30,7 +30,7 @@ export function transitionDemo(state: State, command: CommandRequest): State {
   }
   if (command.type === 'demo.set-enabled') {
     next.running = command.payload.enabled;
-    next.activity = next.running ? 'thinking' : 'waiting';
+    next.activity = next.running ? 'thinking' : next.progress === 100 && next.activity === 'completed' ? 'completed' : 'waiting';
     addLog(next.running ? 'Demo resumed' : 'Demo paused', `Automatic demo updates ${next.running ? 'enabled' : 'disabled'}`);
     return next;
   }

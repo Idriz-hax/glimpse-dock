@@ -30,7 +30,7 @@ describe('Demo adapter', () => {
     vi.spyOn(Math, 'random').mockReturnValue(1 / 2);
     const completed = transitionDemo(original, { v: 1, requestId: 'complete', type: 'demo.simulate', payload: {} });
     expect(completed).toMatchObject({ progress: 100, activity: 'completed' });
-    expect(transitionDemo(completed, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } }).activity).toBe('waiting');
+    expect(transitionDemo(completed, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } })).toMatchObject({ progress: 100, activity: 'completed', running: false });
     vi.restoreAllMocks();
   });
 });

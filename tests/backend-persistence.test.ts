@@ -64,6 +64,38 @@ describe('backend persistence and websocket integration', () => {
     expect(await restored.json()).toMatchObject({ revision: 1, state: { task: 'survives restart' } });
   });
 
+  it('persists display style across restart and broadcasts the style transition', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'glimpse-backend-'));
+    const database = join(directory, 'state.sqlite');
+    const base = await start(database);
+    const { cookie, csrf } = await setup(base);
+    const socket = new WebSocket(`${base.replace('http:', 'ws:')}/api/stream`, { headers: { cookie, origin: base } });
+    const initialMessage = receive(socket);
+    await new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    await initialMessage;
+    const broadcast = receive(socket);
+    const response = await fetch(`${base}/api/command`, {
+      method: 'POST', headers: { cookie, origin: base, 'content-type': 'application/json' },
+      body: JSON.stringify({ csrf, v: 1, requestId: 'style', type: 'display.set-style', payload: { style: 'ambient' } }),
+    });
+    expect(response.status).toBe(200);
+    expect(await broadcast).toMatchObject({ type: 'state', revision: 1, state: { displayStyle: 'ambient' } });
+    const socketClosed = new Promise<void>(resolve => socket.once('close', () => resolve()));
+    socket.close();
+    await socketClosed;
+    await app!.close();
+    app = undefined;
+
+    const restarted = await start(database);
+    const login = await fetch(`${restarted}/api/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: restarted },
+      body: JSON.stringify({ password: 'long-enough-password' }),
+    });
+    const loginCookie = login.headers.get('set-cookie')!.split(';')[0];
+    const restored = await fetch(`${restarted}/api/state`, { headers: { cookie: loginCookie } });
+    expect(await restored.json()).toMatchObject({ revision: 1, state: { displayStyle: 'ambient' } });
+  });
+
   it('does not report or publish a state transition when the SQLite transaction fails', async () => {
     directory = await mkdtemp(join(tmpdir(), 'glimpse-backend-'));
     const database = join(directory, 'state.sqlite');
