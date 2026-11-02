@@ -33,4 +33,17 @@ describe('Demo adapter', () => {
     expect(transitionDemo(completed, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } })).toMatchObject({ progress: 100, activity: 'completed', running: false });
     vi.restoreAllMocks();
   });
+
+  it('starts a fresh task when resuming or simulating from a terminal state', () => {
+    const completed = { ...createDemoState(), activity: 'completed' as const, progress: 100, task: 'Finished task' };
+    const errored = { ...completed, activity: 'error' as const };
+    vi.spyOn(Math, 'random').mockReturnValue(1 / 4);
+    for (const terminal of [completed, errored]) {
+      expect(transitionDemo(terminal, { v: 1, requestId: 'resume', type: 'demo.set-enabled', payload: { enabled: true } }))
+        .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace', running: true });
+      expect(transitionDemo(terminal, { v: 1, requestId: 'simulate', type: 'demo.simulate', payload: {} }))
+        .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace' });
+    }
+    vi.restoreAllMocks();
+  });
 });
