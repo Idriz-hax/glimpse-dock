@@ -3,7 +3,15 @@ import { escapeHTML } from '../shared/render-helpers';
 import { icon } from '../shared/icons';
 
 export function renderDisplay(state: State, demoMode = true, connected = true): string {
-  const presentations = { idle: ['Standing by.', 'IDLE'], thinking: ['Thinking.', 'THINKING'], 'tool-use': ['Using a tool.', 'USING A TOOL'], responding: ['Responding.', 'RESPONDING'], waiting: ['Waiting.', 'WAITING'], completed: ['Task complete.', 'COMPLETED'], error: ['Something went wrong.', 'ERROR'] } as const;
+  const presentations = {
+    idle: ['Standing by.', 'IDLE'],
+    thinking: ['Thinking.', 'THINKING'],
+    'tool-use': ['Using a tool.', 'USING A TOOL'],
+    responding: ['Responding.', 'RESPONDING'],
+    waiting: ['Waiting.', 'WAITING'],
+    completed: ['Task complete.', 'COMPLETED'],
+    error: ['Something went wrong.', 'ERROR'],
+  } as const;
   const [mainTitle, phase] = presentations[state.activity];
   const progress = typeof state.progress === 'number' && Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 100 ? state.progress : null;
   const tiles = state.widgets.slice(0, 3).map(w => `<div class="display-tile"><div class="display-tile-head">${escapeHTML(w.label)}</div><div class="display-tile-value">${escapeHTML(w.value)}</div></div>`).join('');

@@ -46,9 +46,17 @@ function message(error: unknown) { return error instanceof Error ? error.message
 function unauthenticated() { socket?.close(); role = null; state = null; csrf = ''; gateError = 'Your session expired. Please sign in again.'; render(); }
 async function loadState() { const snapshot = validSnapshot(await request('/api/state')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
 function connect() {
-  clearTimeout(reconnectTimer); socket?.close(); socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream`);
-  socket.onmessage = event => { try { const value: unknown = JSON.parse(String(event.data)); const parsed = StateMessageSchema.safeParse(value); const msg = parsed.success ? parseStateMessage(parsed.data) : null; if (!msg) throw new Error('Invalid state update'); state = msg.state; streamConnected = true; retry = 0; render(); } catch { socket?.close(); } };
-  socket.onclose = () => { streamConnected = false; render(); reconnectTimer = window.setTimeout(async () => { try { await loadState(); connect(); } catch (error) { gateError = message(error); scheduleReconnect(); } }, Math.min(1000 * 2 ** retry++, 30000)); };
+  clearTimeout(reconnectTimer); socket?.close();
+  const currentSocket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream`);
+  socket = currentSocket;
+  currentSocket.onmessage = event => {
+    if (socket !== currentSocket) return;
+    try { const value: unknown = JSON.parse(String(event.data)); const parsed = StateMessageSchema.safeParse(value); const msg = parsed.success ? parseStateMessage(parsed.data) : null; if (!msg) throw new Error('Invalid state update'); state = msg.state; streamConnected = true; retry = 0; render(); } catch { currentSocket.close(); }
+  };
+  currentSocket.onclose = () => {
+    if (socket !== currentSocket) return;
+    streamConnected = false; render(); reconnectTimer = window.setTimeout(async () => { if (socket !== currentSocket) return; try { await loadState(); if (socket !== currentSocket) return; connect(); } catch (error) { if (socket !== currentSocket) return; gateError = message(error); scheduleReconnect(); } }, Math.min(1000 * 2 ** retry++, 30000));
+  };
 }
 function scheduleReconnect() { reconnectTimer = window.setTimeout(connect, Math.min(1000 * 2 ** retry++, 30000)); }
 async function send(type: string, payload: object) {
