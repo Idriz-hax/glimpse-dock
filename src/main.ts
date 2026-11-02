@@ -14,13 +14,14 @@ const displayMode = resolveRoute(location.pathname) === 'display';
 let page: AdminPage = 'overview', state: State | null = null, role: string | null = null, csrf = '', demoMode = false;
 let authMode: 'setup' | 'login' = 'login', gateError = '', gateStatus = '', gatePending = false, pairingCode = '', pairingStatus = '', pairingError = '', pairingPending = false;
 let socket: WebSocket | undefined, retry = 0, reconnectTimer: number | undefined, toastTimer: number | undefined;
+let streamConnected = false;
 const id = () => crypto.randomUUID();
 
 function render() {
   document.body.classList.toggle('display-mode', displayMode);
   if (!role || (!displayMode && role !== 'owner')) { app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
   if (!state) { app.textContent = 'Loading workspace…'; return; }
-  if (displayMode) { app.innerHTML = renderDisplay(state, demoMode); return; }
+  if (displayMode) { app.innerHTML = renderDisplay(state, demoMode, streamConnected); return; }
   app.innerHTML = renderAdmin(state, page, { demoMode, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
   bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('demo.add-widget', {}), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
 }
@@ -46,8 +47,9 @@ function unauthenticated() { socket?.close(); role = null; state = null; csrf = 
 async function loadState() { const snapshot = validSnapshot(await request('/api/state')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
 function connect() {
   clearTimeout(reconnectTimer); socket?.close(); socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream`);
-  socket.onmessage = event => { try { const value: unknown = JSON.parse(String(event.data)); const parsed = StateMessageSchema.safeParse(value); const msg = parsed.success ? parseStateMessage(parsed.data) : null; if (!msg) throw new Error('Invalid state update'); state = msg.state; retry = 0; render(); } catch { socket?.close(); } };
-  socket.onclose = () => { reconnectTimer = window.setTimeout(async () => { try { await loadState(); connect(); } catch (error) { gateError = message(error); scheduleReconnect(); } }, Math.min(1000 * 2 ** retry++, 30000)); };
+  socket.onopen = () => { streamConnected = true; render(); };
+  socket.onmessage = event => { try { const value: unknown = JSON.parse(String(event.data)); const parsed = StateMessageSchema.safeParse(value); const msg = parsed.success ? parseStateMessage(parsed.data) : null; if (!msg) throw new Error('Invalid state update'); state = msg.state; streamConnected = true; retry = 0; render(); } catch { socket?.close(); } };
+  socket.onclose = () => { streamConnected = false; render(); reconnectTimer = window.setTimeout(async () => { try { await loadState(); connect(); } catch (error) { gateError = message(error); scheduleReconnect(); } }, Math.min(1000 * 2 ** retry++, 30000)); };
 }
 function scheduleReconnect() { reconnectTimer = window.setTimeout(connect, Math.min(1000 * 2 ** retry++, 30000)); }
 async function send(type: string, payload: object) {

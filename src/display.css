@@ -34,8 +34,11 @@ body.display-mode #app { min-height:100vh; }
 .display-launch:hover {background:#21414d}
 .display-note {border-radius:9px;border:1px solid #ffffff1a;background:#ffffff09;padding:12px 15px;color:#a8bbcd;font-size:13px;line-height:1.5;margin-top:16px}
 .display-note strong {color:#eff6ff}
+.display--quiet .display-orb,.display--quiet .display-halo {animation:none}
+.display--offline .display-pill {border-color:#d99b5c;color:#ffd7a8}
 @keyframes halo {50% {transform:scale(1.065);opacity:.5}}
 @keyframes orb {50% {transform:rotate(22deg) scale(1.12)}}
 @media(max-height:660px) { .display-ambient {width:clamp(125px,22vh,200px);margin-bottom:13px} .display h1{font-size:clamp(30px,4vw,50px)}.display-tile{min-height:60px;padding:13px}.display-footer{margin-top:12px}}
 @media(max-width:680px) {.display{padding:20px}.display-bottom{grid-template-columns:1fr 1fr}.display-tile:last-child{display:none}.display-meta{gap:8px}.display-pill{font-size:10px}.display-hint{display:none}.display h1{font-size:35px}}
+@media(max-width:680px) {.display-footer{font-size:10px}.display-footer span:last-child{display:flex;flex-direction:column;align-items:flex-end}.display-stage{padding:12px 0}.display-ambient{width:clamp(120px,24vh,210px)}}
 @media(prefers-reduced-motion:reduce){.display-orb,.display-halo{animation:none}}
