@@ -28,4 +28,17 @@ describe('Admin view', () => {
     expect(settings).toContain('&lt;img src=x&gt;');
     expect(settings).not.toContain('<output aria-label="One-time pairing code"><img');
   });
+  it('renders an accessible display-style choice from backend state', () => {
+    for (const style of ['quiet', 'ambient'] as const) {
+      const state = { ...initialState(), displayStyle: style };
+      const html = renderAdmin(state, 'settings', { demoMode: false });
+      expect(html).toContain('<fieldset');
+      expect(html).toContain('<legend>Display style</legend>');
+      expect(html).toContain('name="display-style"');
+      expect(html).toContain('> Quiet status</label>');
+      expect(html).toContain('> Ambient activity</label>');
+      expect(html).toMatch(new RegExp(`value="${style}" checked`));
+      expect(html).not.toMatch(new RegExp(`value="${style === 'quiet' ? 'ambient' : 'quiet'}" checked`));
+    }
+  });
 });

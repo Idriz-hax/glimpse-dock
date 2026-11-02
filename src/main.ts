@@ -22,7 +22,7 @@ function render() {
   if (!state) { app.textContent = 'Loading workspace…'; return; }
   if (displayMode) { app.innerHTML = renderDisplay(state, demoMode); return; }
   app.innerHTML = renderAdmin(state, page, { demoMode, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
-  bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('demo.add-widget', {}), reset: () => send('demo.reset', {}), pair: pairDisplay, logout });
+  bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('demo.add-widget', {}), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
 }
 function bindGate() {
   app.querySelector<HTMLButtonElement>('[data-auth-mode]')?.addEventListener('click', event => { authMode = (event.currentTarget as HTMLElement).dataset.authMode as 'setup' | 'login'; gateError = ''; render(); });
