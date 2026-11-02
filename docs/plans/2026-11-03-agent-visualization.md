@@ -44,7 +44,13 @@
 - [ ] Track WebSocket connectivity in `src/main.ts` and show a disconnected/stale indicator on Display when the stream closes; clear it after a valid snapshot/update.
 - [ ] Add view tests for all states, both styles, absent/present progress, and disconnected presentation; run focused Display tests. Manually review at 1920×1080 and a narrow viewport, keyboard and screen-reader semantics.
 
-### Task 5: Documentation and final verification
+### Task 5: Enforce valid activity transitions
+
+- [ ] Define and export a finite activity transition table and `canTransitionActivity(from, to)` in `src/shared/protocol.ts`. Active phases may transition between active phases or to completed/error; completed/error may remain terminal or transition to idle/thinking for a new task.
+- [ ] In `server/server.ts`, reject `state.set-activity` when the transition is invalid; keep accepted updates on the existing transactional persistence and broadcast path. Ensure `task.update`, `task.complete`, and demo restart/completion transitions produce valid, consistent activity/progress values.
+- [ ] Add unit and server tests for representative allowed/disallowed transitions, especially completed→thinking (new task) versus completed→tool-use (invalid), and verify invalid transitions do not revise/persist/broadcast state. Run focused protocol/server/demo tests.
+
+### Task 6: Documentation and final verification
 
 - [ ] Update `PROJECT.md` to mark Milestone 3 complete only for verified scope and retain explicit note that Hermes is not integrated.
 - [ ] Run `npm test` and `npm run build`; fix failures within this scope. Confirm `git status` preserves the existing untracked SQLite database and visual-companion artifacts (do not stage them).

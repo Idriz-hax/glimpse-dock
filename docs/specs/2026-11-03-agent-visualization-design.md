@@ -10,6 +10,8 @@ Hermes integration, a general widget system, and the broader display preferences
 
 Extend protocol v1 state with a bounded activity state: idle, thinking, tool-use, responding, waiting, completed, or error. Add validated commands for setting activity and clearing/setting measurable progress as needed; progress remains optional in presentation, and no percentage is invented when absent. The backend remains authoritative: it validates, persists and broadcasts accepted changes; clients render only validated snapshots/updates. Demo transitions exercise these states. Completion and errors are terminal-looking truthful states, not inferred from progress alone.
 
+Validate state changes against an explicit transition table: active phases may move between activity phases or end in completed/error; completed/error may remain terminal or begin a new task at idle/thinking. Reject transitions outside the table at the backend boundary and test allowed and disallowed transitions.
+
 Persist the selected display style in backend-owned state so the Admin choice applies to separately paired Display sessions and survives reload/restart. Only the owner may change it; display sessions remain read-only. Preserve existing authentication, CSRF, Origin, validation, persistence-failure and broadcast boundaries. Existing persisted state must receive safe defaults when fields are absent.
 
 ## Display behavior
