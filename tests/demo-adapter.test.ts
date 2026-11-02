@@ -22,4 +22,15 @@ describe('Demo adapter', () => {
     expect(transitionDemo(paused, { v: 1, requestId: '3', type: 'demo.reset', payload: {} })).toEqual(original);
     vi.restoreAllMocks();
   });
+
+  it('sets activity and completion consistently for demo actions', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(1 / 4);
+    const original = createDemoState();
+    expect(transitionDemo(original, { v: 1, requestId: 'tool', type: 'demo.simulate', payload: {} }).activity).toBe('tool-use');
+    vi.spyOn(Math, 'random').mockReturnValue(1 / 2);
+    const completed = transitionDemo(original, { v: 1, requestId: 'complete', type: 'demo.simulate', payload: {} });
+    expect(completed).toMatchObject({ progress: 100, activity: 'completed' });
+    expect(transitionDemo(completed, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } }).activity).toBe('waiting');
+    vi.restoreAllMocks();
+  });
 });

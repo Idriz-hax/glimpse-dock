@@ -1,7 +1,7 @@
 export type Level = 'info' | 'success' | 'warning';
 export type Activity = { id: number; time: string; title: string; detail: string; level: Level };
 export type Widget = { id: string; label: string; value: string; sub: string; tone: 'purple' | 'cyan' | 'green' | 'amber' };
-export type State = { agent: string; task: string; progress: number; running: boolean; widgets: Widget[]; logs: Activity[] };
+export type State = { agent: string; task: string; progress: number | null; running: boolean; activity: 'idle' | 'thinking' | 'tool-use' | 'responding' | 'waiting' | 'completed' | 'error'; displayStyle: 'quiet' | 'ambient'; widgets: Widget[]; logs: Activity[] };
 
 const defaults: Widget[] = [
   { id: 'tasks', label: 'Tasks completed', value: '24', sub: '+6 in this session', tone: 'purple' },
@@ -10,7 +10,7 @@ const defaults: Widget[] = [
 ];
 
 export function initialState(): State {
-  return { agent: 'Hermes (Demo)', task: 'Analysing workspace and preparing next actions', progress: 64, running: true, widgets: defaults.map(w => ({ ...w })), logs: [] };
+  return { agent: 'Hermes (Demo)', task: 'Analysing workspace and preparing next actions', progress: 64, running: true, activity: 'thinking', displayStyle: 'quiet', widgets: defaults.map(w => ({ ...w })), logs: [] };
 }
 
 export const maxLogId = (logs: readonly Pick<Activity, 'id'>[], current = 0) => Math.max(current, ...logs.map(log => log.id));
@@ -19,7 +19,8 @@ export function validateState(value: unknown): State | null {
   if (typeof value !== 'object' || value === null) return null;
   const state = value as Record<string, unknown>;
   if (typeof state.agent !== 'string' || typeof state.task !== 'string' || typeof state.running !== 'boolean' ||
-      typeof state.progress !== 'number' || !Number.isFinite(state.progress) || state.progress < 0 || state.progress > 100 ||
+      !(state.progress === null || typeof state.progress === 'number' && Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 100) ||
+      !['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'].includes(String(state.activity)) || !['quiet', 'ambient'].includes(String(state.displayStyle)) ||
       !Array.isArray(state.widgets) || !Array.isArray(state.logs) || state.logs.length > 40) return null;
   const widgets = state.widgets as unknown[];
   if (!widgets.every(item => {
@@ -39,7 +40,8 @@ export function validateState(value: unknown): State | null {
 export function loadState(saved: string | null, fallback: State = initialState()): State {
   if (saved === null) return fallback;
   try {
-    const state = validateState(JSON.parse(saved));
+    const parsed = JSON.parse(saved);
+    const state = validateState({ ...parsed, activity: parsed.activity ?? 'idle', displayStyle: parsed.displayStyle ?? 'quiet' });
     return state ? { ...state, agent: 'Hermes (Demo)' } : fallback;
   } catch { return fallback; }
 }

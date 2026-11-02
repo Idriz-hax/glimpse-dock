@@ -75,6 +75,23 @@ describe('backend', () => {
     expect(result.statusCode).toBe(200);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets.find((widget: {id:string}) => widget.id === 'tasks').value).toBe('45');
   });
+  it('allows owners to change display style and persists the state shape defaults', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
+    const changed = await send('display.set-style', { style: 'ambient' });
+    expect(changed.statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.displayStyle).toBe('ambient');
+  });
+  it('rejects display style changes from an agent principal', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
+    const response = await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'style-agent', type: 'display.set-style', payload: { style: 'ambient' } } });
+    expect(response.statusCode).toBe(403);
+  });
   it('persists accepted commands before reporting success and denies display writes', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });

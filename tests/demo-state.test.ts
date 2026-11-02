@@ -14,7 +14,7 @@ describe('demo state validation', () => {
 
   it('falls back to defaults for malformed JSON or invalid state', () => {
     expect(loadState('{')).toEqual(initialState());
-    expect(loadState(JSON.stringify({ ...initialState(), progress: Infinity }))).toEqual(initialState());
+    expect(loadState(JSON.stringify({ ...initialState(), progress: 101 }))).toEqual(initialState());
   });
 
   it('preserves seeded fallback state when saved data is absent or invalid', () => {
@@ -26,6 +26,11 @@ describe('demo state validation', () => {
   it('normalizes valid persisted agent strings to the demo agent', () => {
     const saved = { ...initialState(), agent: 'other agent' };
     expect(loadState(JSON.stringify(saved)).agent).toBe('Hermes (Demo)');
+  });
+
+  it('adds activity and display defaults to older saved states', () => {
+    const { activity: _activity, displayStyle: _style, ...oldState } = initialState();
+    expect(loadState(JSON.stringify(oldState))).toMatchObject({ activity: 'idle', displayStyle: 'quiet' });
   });
 
   it('rejects more than 40 persisted log entries', () => {

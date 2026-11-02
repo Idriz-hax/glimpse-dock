@@ -30,16 +30,17 @@ export function transitionDemo(state: State, command: CommandRequest): State {
   }
   if (command.type === 'demo.set-enabled') {
     next.running = command.payload.enabled;
+    next.activity = next.running ? 'thinking' : 'waiting';
     addLog(next.running ? 'Demo resumed' : 'Demo paused', `Automatic demo updates ${next.running ? 'enabled' : 'disabled'}`);
     return next;
   }
   if (command.type !== 'demo.simulate') return next;
 
   const actions = [
-    () => { next.progress = Math.min(100, next.progress + 11); addLog('Task progress updated', `Current task advanced to ${next.progress}%`, 'success'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget) widget.value = String(Number(widget.value) + 3); addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget) widget.value = String(Number(widget.value) + 1); addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
-    () => { next.task = 'Preparing visual summary for the workspace'; next.progress = 28; addLog('New task started', next.task); },
+    () => { next.progress = Math.min(100, (next.progress ?? 0) + 11); next.activity = next.progress === 100 ? 'completed' : 'thinking'; addLog(next.activity === 'completed' ? 'Task completed' : 'Task progress updated', `Current task advanced to ${next.progress}%`, 'success'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget) widget.value = String(Number(widget.value) + 3); next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget) widget.value = String(Number(widget.value) + 1); next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
+    () => { next.task = 'Preparing visual summary for the workspace'; next.progress = 28; next.activity = 'thinking'; addLog('New task started', next.task); },
   ];
   actions[Math.floor(Math.random() * actions.length)]();
   return next;

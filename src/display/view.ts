@@ -3,7 +3,7 @@ import { escapeHTML } from '../shared/render-helpers';
 import { icon } from '../shared/icons';
 
 export function renderDisplay(state: State, demoMode = true): string {
-  const progress = Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 100 ? state.progress : 0;
+  const progress = state.progress !== null && Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 100 ? state.progress : 0;
   const mainTitle = progress >= 100 ? 'Task complete.' : state.running ? 'Working on it.' : 'Standing by.';
   const phase = progress >= 100 ? 'TASK FINISHED' : state.running ? 'AGENT ACTIVE' : 'AGENT PAUSED';
   const tiles = state.widgets.slice(0, 3).map(w => `<div class="display-tile"><div class="display-tile-head">${escapeHTML(w.label)}</div><div class="display-tile-value">${escapeHTML(w.value)}</div></div>`).join('');

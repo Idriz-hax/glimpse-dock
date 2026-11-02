@@ -119,14 +119,19 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
        next = transitionDemo(state, command);
      } else if (command.type === 'task.update') next = { ...state, task: command.payload.task };
-     else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
-     else if (command.type === 'task.complete') next = { ...state, progress: 100, task: 'Task completed successfully' };
+      else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
+      else if (command.type === 'state.set-activity') next = { ...state, activity: command.payload.activity };
+      else if (command.type === 'task.complete') next = { ...state, progress: 100, task: 'Task completed successfully' };
      else if (command.type === 'metric.set-value') {
        const widgets = state.widgets.map(widget => widget.id === command.payload.id ? { ...widget, value: String(command.payload.value) } : widget);
        if (!widgets.some(widget => widget.id === command.payload.id)) return null;
        next = { ...state, widgets };
      }
-     return commit(next, command.type, principal === 'demo' || isDemoCommand ? 'demo' : principal);
+      else if (command.type === 'display.set-style') {
+        if (principal !== 'owner') return null;
+        next = { ...state, displayStyle: command.payload.style };
+      }
+      return commit(next, command.type, principal === 'demo' || isDemoCommand ? 'demo' : principal);
    };
    const demoTimer = options.demo ? setInterval(() => {
      if (!state.running) return;
