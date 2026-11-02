@@ -124,7 +124,10 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
          next = { ...state, activity: command.payload.activity };
        }
-       else if (command.type === 'task.complete') next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully' };
+       else if (command.type === 'task.complete') {
+         if (!canTransitionActivity(state.activity, 'completed')) return null;
+         next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully' };
+       }
      else if (command.type === 'metric.set-value') {
        const widgets = state.widgets.map(widget => widget.id === command.payload.id ? { ...widget, value: String(command.payload.value) } : widget);
        if (!widgets.some(widget => widget.id === command.payload.id)) return null;

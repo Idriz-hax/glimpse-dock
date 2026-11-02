@@ -116,6 +116,7 @@ describe('backend', () => {
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
+    await send('state.set-activity', { activity: 'thinking' });
     await send('task.complete', {});
     const before = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
     expect(before.state.activity).toBe('completed');
@@ -123,5 +124,21 @@ describe('backend', () => {
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(before);
     expect((await send('task.update', { task: 'Next task' })).statusCode).toBe(200);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state).toMatchObject({ task: 'Next task', activity: 'thinking', progress: null });
+  });
+  it('rejects completion from idle or error without revising state but allows repeated completion', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
+    const idle = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    expect((await send('task.complete', {})).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(idle);
+    await send('state.set-activity', { activity: 'error' });
+    const error = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    expect((await send('task.complete', {})).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(error);
+    await send('state.set-activity', { activity: 'thinking' });
+    await send('task.complete', {});
+    expect((await send('task.complete', {})).statusCode).toBe(200);
   });
 });
