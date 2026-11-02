@@ -25,6 +25,7 @@ describe('display render boundary', () => {
     activities.forEach((activity, i) => {
       const html = renderDisplay({ ...initialState(), activity, progress: 100 });
       expect(html).toContain(titles[i]);
+      expect(html).toContain(`data-activity="${activity}"`);
     });
     expect(renderDisplay({ ...initialState(), progress: null })).not.toContain('display-progress');
     expect(renderDisplay(initialState())).toContain('64% progress');
@@ -33,6 +34,7 @@ describe('display render boundary', () => {
   it('supports both display styles and a disconnected status', () => {
     expect(renderDisplay({ ...initialState(), displayStyle: 'quiet' })).toContain('display--quiet');
     expect(renderDisplay({ ...initialState(), displayStyle: 'ambient' })).toContain('display--ambient');
+    expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).toContain('>Keep this task text</p>');
     expect(renderDisplay(initialState(), true, false)).toContain('Connection lost');
   });
 });

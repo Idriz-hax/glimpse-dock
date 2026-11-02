@@ -34,7 +34,9 @@ body.display-mode #app { min-height:100vh; }
 .display-launch:hover {background:#21414d}
 .display-note {border-radius:9px;border:1px solid #ffffff1a;background:#ffffff09;padding:12px 15px;color:#a8bbcd;font-size:13px;line-height:1.5;margin-top:16px}
 .display-note strong {color:#eff6ff}
-.display--quiet .display-orb,.display--quiet .display-halo {animation:none}
+.display--quiet .display-orb,.display--quiet .display-halo,
+.display--ambient:not([data-activity="thinking"]):not([data-activity="tool-use"]):not([data-activity="responding"]) .display-orb,
+.display--ambient:not([data-activity="thinking"]):not([data-activity="tool-use"]):not([data-activity="responding"]) .display-halo {animation:none}
 .display--offline .display-pill {border-color:#d99b5c;color:#ffd7a8}
 @keyframes halo {50% {transform:scale(1.065);opacity:.5}}
 @keyframes orb {50% {transform:rotate(22deg) scale(1.12)}}

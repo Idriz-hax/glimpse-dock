@@ -47,7 +47,6 @@ function unauthenticated() { socket?.close(); role = null; state = null; csrf = 
 async function loadState() { const snapshot = validSnapshot(await request('/api/state')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
 function connect() {
   clearTimeout(reconnectTimer); socket?.close(); socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream`);
-  socket.onopen = () => { streamConnected = true; render(); };
   socket.onmessage = event => { try { const value: unknown = JSON.parse(String(event.data)); const parsed = StateMessageSchema.safeParse(value); const msg = parsed.success ? parseStateMessage(parsed.data) : null; if (!msg) throw new Error('Invalid state update'); state = msg.state; streamConnected = true; retry = 0; render(); } catch { socket?.close(); } };
   socket.onclose = () => { streamConnected = false; render(); reconnectTimer = window.setTimeout(async () => { try { await loadState(); connect(); } catch (error) { gateError = message(error); scheduleReconnect(); } }, Math.min(1000 * 2 ** retry++, 30000)); };
 }
