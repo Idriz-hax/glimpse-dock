@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { initialState } from '../src/demo-state';
-import { CommandRequestSchema, ErrorResponseSchema, ProtocolStateSchema, StateMessageSchema } from '../src/shared/protocol';
+import { ActivityTransitions, canTransitionActivity, CommandRequestSchema, ErrorResponseSchema, ProtocolStateSchema, StateMessageSchema } from '../src/shared/protocol';
 
 describe('protocol v1', () => {
+  it('exposes valid activity transitions', () => {
+    expect(ActivityTransitions.idle).toEqual(['idle', 'thinking', 'waiting', 'error']);
+    expect(canTransitionActivity('thinking', 'tool-use')).toBe(true);
+    expect(canTransitionActivity('completed', 'thinking')).toBe(true);
+    expect(canTransitionActivity('completed', 'tool-use')).toBe(false);
+    expect(canTransitionActivity('error', 'completed')).toBe(false);
+  });
   it('accepts only known bounded commands', () => {
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r1', type: 'metric.set-value', payload: { id: 'tasks', value: 42 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r2', type: 'state.set-progress', payload: { progress: 100 } }).success).toBe(true);

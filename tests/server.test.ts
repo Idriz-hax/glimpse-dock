@@ -111,4 +111,17 @@ describe('backend', () => {
     expect(denied.statusCode).toBe(403);
     expect((await app.inject({ url: '/api/state', headers: { cookie: displayCookie } })).statusCode).toBe(200);
   });
+  it('rejects invalid activity transitions without revising state and keeps task commands coherent', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
+    await send('task.complete', {});
+    const before = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    expect(before.state.activity).toBe('completed');
+    expect((await send('state.set-activity', { activity: 'tool-use' })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(before);
+    expect((await send('task.update', { task: 'Next task' })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state).toMatchObject({ task: 'Next task', activity: 'thinking', progress: null });
+  });
 });

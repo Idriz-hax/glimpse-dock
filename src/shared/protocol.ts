@@ -5,6 +5,18 @@ const EmptyPayloadSchema = z.object({}).strict();
 const ProgressSchema = z.number().finite().min(0).max(100);
 const TaskSchema = z.string().min(1).max(2048);
 export const ActivitySchema = z.enum(['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error']);
+export const ActivityTransitions = {
+  idle: ['idle', 'thinking', 'waiting', 'error'],
+  thinking: ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  'tool-use': ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  responding: ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  waiting: ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  completed: ['completed', 'idle', 'thinking'],
+  error: ['error', 'idle', 'thinking'],
+} as const satisfies Record<z.infer<typeof ActivitySchema>, readonly z.infer<typeof ActivitySchema>[]>;
+export function canTransitionActivity(from: z.infer<typeof ActivitySchema>, to: z.infer<typeof ActivitySchema>): boolean {
+  return ActivityTransitions[from].includes(to as never);
+}
 export const DisplayStyleSchema = z.enum(['quiet', 'ambient']);
 
 const command = <T extends string, P extends z.ZodType>(type: T, payload: P) =>

@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
-import { CommandRequestSchema, ProtocolStateSchema, type CommandRequest } from '../src/shared/protocol.ts';
+import { canTransitionActivity, CommandRequestSchema, ProtocolStateSchema, type CommandRequest } from '../src/shared/protocol.ts';
 import { createDemoState, transitionDemo } from './adapters/demo.ts';
 
 const scrypt = promisify(scryptCb);
@@ -118,10 +118,13 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      if (isDemoCommand) {
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
        next = transitionDemo(state, command);
-     } else if (command.type === 'task.update') next = { ...state, task: command.payload.task };
+      } else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null };
       else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
-      else if (command.type === 'state.set-activity') next = { ...state, activity: command.payload.activity };
-      else if (command.type === 'task.complete') next = { ...state, progress: 100, task: 'Task completed successfully' };
+       else if (command.type === 'state.set-activity') {
+         if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
+         next = { ...state, activity: command.payload.activity };
+       }
+       else if (command.type === 'task.complete') next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully' };
      else if (command.type === 'metric.set-value') {
        const widgets = state.widgets.map(widget => widget.id === command.payload.id ? { ...widget, value: String(command.payload.value) } : widget);
        if (!widgets.some(widget => widget.id === command.payload.id)) return null;
