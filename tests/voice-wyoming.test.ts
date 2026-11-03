@@ -121,5 +121,8 @@ describe('WyomingVoiceClient', () => {
     const uri = await new Promise<string>(resolve => server.once('listening', () => resolve(`tcp://127.0.0.1:${(server.address() as net.AddressInfo).port}`)));
     await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).listWakeModels()).resolves.toEqual([{ name: 'hey_hermes', phrase: 'hey_hermes' }]);
   });
-  it('rejects non-loopback endpoints', () => { expect(() => new WyomingVoiceClient({ wake: 'tcp://example.com:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' })).toThrow(); });
+  it('rejects endpoints outside the configured loopback hosts', () => {
+    expect(() => new WyomingVoiceClient({ wake: 'tcp://example.com:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' })).toThrow();
+    expect(() => new WyomingVoiceClient({ wake: 'tcp://[::1]:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' })).toThrow();
+  });
 });

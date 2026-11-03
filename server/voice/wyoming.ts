@@ -10,7 +10,7 @@ const TIMEOUT_MS = 30_000;
 function endpoint(uri: string) {
   let u: URL;
   try { u = new URL(uri); } catch { throw new Error('Invalid Wyoming endpoint'); }
-  if (u.protocol !== 'tcp:' || !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(u.hostname) || !u.port) throw new Error('Wyoming endpoints must use loopback TCP');
+  if (u.protocol !== 'tcp:' || !['127.0.0.1', 'localhost'].includes(u.hostname) || !u.port) throw new Error('Wyoming endpoints must use loopback TCP');
   return { host: u.hostname.replace(/^\[|\]$/g, ''), port: Number(u.port) };
 }
 
