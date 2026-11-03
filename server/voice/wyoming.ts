@@ -53,10 +53,14 @@ export class WyomingVoiceClient {
       try {
         while (true) {
           const e = await next();
-          if (e.type === 'detection') { detected = typeof e.data?.name === 'string' ? e.data.name : model.name; stopFeeding(); onDetection(detected, Number(e.data?.timestamp ?? Date.now())); await send({ type: 'audio-stop' }); void iterator.return?.(); void feeding; return detected; }
-          if (e.type === 'not-detected') { stopFeeding(); void iterator.return?.(); await send({ type: 'audio-stop' }); await feeding; return; }
+          if (e.type === 'detection') { detected = typeof e.data?.name === 'string' ? e.data.name : model.name; onDetection(detected, Number(e.data?.timestamp ?? Date.now())); await send({ type: 'audio-stop' }); return detected; }
+          if (e.type === 'not-detected') { await send({ type: 'audio-stop' }); return; }
         }
-       } finally { if (detected) { stopFeeding(); void iterator.return?.(); } void feeding; }
+        } finally {
+          stopFeeding();
+          try { void Promise.resolve(iterator.return?.()).catch(() => {}); } catch {}
+          await feeding;
+        }
     });
   }
   async transcribe(audio: Buffer, signal: AbortSignal): Promise<string> {

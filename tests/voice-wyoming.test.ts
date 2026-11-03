@@ -119,6 +119,19 @@ describe('WyomingVoiceClient', () => {
     await audioStarted;
     await expect(pending).rejects.toThrow(/aborted/);
   });
+  it('closes a pending audio iterator when wake detection is aborted', async () => {
+    const controller = new AbortController(); let infoSent!: () => void; let reading!: () => void; let closed = false;
+    const described = new Promise<void>(resolve => { infoSent = resolve; });
+    const audioRead = new Promise<void>(resolve => { reading = resolve; });
+    const uri = await fake((e, send) => {
+      if (e.type === 'describe') { send({ type: 'info', data: { wake: [{ name: 'hey_hermes' }] } }); infoSent(); }
+    });
+    const audio = { [Symbol.asyncIterator]: () => ({ next: () => { reading(); return new Promise<IteratorResult<Buffer>>(() => {}); }, return: async () => { closed = true; return { done: true as const, value: undefined }; } }) };
+    const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).detectWake(audio, controller.signal, () => {});
+    await described; await audioRead; controller.abort();
+    await expect(pending).rejects.toThrow(/aborted/);
+    expect(closed).toBe(true);
+  });
   it('waits for socket drain before requesting the next wake audio frame', async () => {
     const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { wake: [{ name: 'hey_hermes' }] } }); });
     const originalWrite = net.Socket.prototype.write;
