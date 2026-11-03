@@ -5,6 +5,8 @@ export type PcmAudio = { pcm: Buffer; rate: number; width: number; channels: num
 const MAX_HEADER = 16 * 1024;
 const MAX_DATA = 64 * 1024;
 const MAX_PAYLOAD = 8 * 1024 * 1024;
+const MAX_UTTERANCE = 480_000;
+const MAX_AUDIO_FRAME = 64 * 1024;
 const TIMEOUT_MS = 30_000;
 
 function endpoint(uri: string) {
@@ -50,9 +52,10 @@ export class WyomingVoiceClient {
          try { while (!signal.aborted && !detected) { const result = await Promise.race([iterator.next(), stopped.then(() => null)]); if (!result || result.done || signal.aborted || detected) break; if (result.value.length > MAX_PAYLOAD) throw new Error('Audio frame too large'); await send({ type: 'audio-chunk' }, result.value); } }
         catch (error) { if (!detected && !signal.aborted) throw error; }
       })();
+      const feedFailure = feeding.then(() => new Promise<never>(() => {}));
       try {
         while (true) {
-          const e = await next();
+          const e = await Promise.race([next(), feedFailure]);
           if (e.type === 'detection') { detected = typeof e.data?.name === 'string' ? e.data.name : model.name; onDetection(detected, Number(e.data?.timestamp ?? Date.now())); await send({ type: 'audio-stop' }); return detected; }
           if (e.type === 'not-detected') { await send({ type: 'audio-stop' }); return; }
         }
@@ -63,12 +66,37 @@ export class WyomingVoiceClient {
         }
     });
   }
-  async transcribe(audio: Buffer, signal: AbortSignal): Promise<string> {
-    if (audio.length > MAX_PAYLOAD) throw new Error('Audio payload too large');
+  async transcribe(audio: AsyncIterable<Buffer>, signal: AbortSignal): Promise<string> {
     return this.run('stt', signal, async (send, next) => {
       await send({ type: 'transcribe' }); await send({ type: 'audio-start', data: { rate: 16000, width: 2, channels: 1 } });
-      await send({ type: 'audio-chunk' }, audio); await send({ type: 'audio-stop' });
-      while (true) { const e = await next(); if (e.type === 'transcript') return typeof e.data?.text === 'string' ? e.data.text : ''; }
+      const iterator = audio[Symbol.asyncIterator]();
+      let total = 0, finished = false, transcript: string | undefined;
+      let stopFeeding!: () => void;
+      const stopped = new Promise<void>(resolve => { stopFeeding = resolve; });
+      const feeding = (async () => {
+        try {
+          while (!signal.aborted && transcript === undefined) {
+            const result = await Promise.race([iterator.next(), stopped.then(() => null)]);
+            if (!result || result.done || signal.aborted || transcript !== undefined) break;
+            if (!Buffer.isBuffer(result.value) || result.value.length > MAX_AUDIO_FRAME) throw new Error('Audio frame too large');
+            total += result.value.length;
+            if (total > MAX_UTTERANCE) throw new Error('Audio utterance too large');
+            await send({ type: 'audio-chunk' }, result.value);
+          }
+          if (!signal.aborted && transcript === undefined) { finished = true; await send({ type: 'audio-stop' }); }
+        } catch (error) { if (!signal.aborted && transcript === undefined) throw error; }
+      })();
+      const feedFailure = feeding.then(() => new Promise<never>(() => {}));
+      try {
+        while (true) {
+          const e = await Promise.race([next(), feedFailure]);
+          if (e.type === 'transcript') { transcript = typeof e.data?.text === 'string' ? e.data.text : ''; stopFeeding(); try { void Promise.resolve(iterator.return?.()).catch(() => {}); } catch {} await feeding; if (!finished) await send({ type: 'audio-stop' }); return transcript; }
+        }
+      } finally {
+        stopFeeding();
+        if (!finished) { try { void Promise.resolve(iterator.return?.()).catch(() => {}); } catch {} }
+        await feeding;
+      }
     });
   }
   async synthesize(text: string, voice: string, signal: AbortSignal): Promise<PcmAudio> {
@@ -103,17 +131,22 @@ export class WyomingVoiceClient {
       if (dataBytes.length > MAX_DATA || bytes.length > MAX_PAYLOAD) throw new Error('Wyoming message too large');
       const h = { ...rest, ...(data === undefined ? {} : { data_length: dataBytes.length }), ...(bytes.length ? { payload_length: bytes.length } : {}), version: '1.0' };
       if (signal.aborted) throw new Error('Wyoming operation aborted');
-       if (!socket.write(Buffer.concat([Buffer.from(JSON.stringify(h) + '\n'), dataBytes, bytes]))) {
-         await new Promise<void>((resolve, reject) => {
-           const cleanup = () => { socket.off('drain', drained); socket.off('error', failed); socket.off('close', closed); signal.removeEventListener('abort', aborted); };
-           const drained = () => { cleanup(); resolve(); };
-           const failed = (error: Error) => { cleanup(); reject(error); };
-           const closed = () => failed(new Error('Wyoming connection closed'));
-           const aborted = () => failed(new Error('Wyoming operation aborted'));
-           socket.once('drain', drained); socket.once('error', failed); socket.once('close', closed); signal.addEventListener('abort', aborted, { once: true });
-           if (signal.aborted) aborted();
-         });
-       }
+        await new Promise<void>((resolve, reject) => {
+          let callbackDone = false, drained = true;
+          const cleanup = () => { socket.off('drain', onDrain); socket.off('error', failed); socket.off('close', closed); signal.removeEventListener('abort', aborted); };
+          const finish = () => { if (callbackDone && drained) { cleanup(); resolve(); } };
+          const onDrain = () => { drained = true; finish(); };
+          const failed = (error: Error) => { cleanup(); reject(error); };
+          const closed = () => failed(new Error('Wyoming connection closed'));
+          const aborted = () => failed(new Error('Wyoming operation aborted'));
+          socket.once('error', failed); socket.once('close', closed); signal.addEventListener('abort', aborted, { once: true });
+          drained = socket.write(Buffer.concat([Buffer.from(JSON.stringify(h) + '\n'), dataBytes, bytes]), error => {
+            if (error) return failed(error);
+            callbackDone = true; finish();
+          });
+          if (!drained) socket.once('drain', onDrain);
+          if (signal.aborted) aborted();
+        });
     };
     socket.on('data', chunk => {
       if (buffer.length + chunk.length > MAX_HEADER + MAX_DATA + MAX_PAYLOAD + 1024) { socket.destroy(new Error('Wyoming message too large')); return; }

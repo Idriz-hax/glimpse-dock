@@ -39,6 +39,7 @@ function fake(handler: (event: any, send: (event: unknown, payload?: Buffer) => 
   return new Promise<string>(resolve => server.once('listening', () => resolve(`tcp://127.0.0.1:${(server.address() as net.AddressInfo).port}`)));
 }
 afterEach(async () => { await Promise.all(servers.splice(0).map(s => new Promise<void>(r => s.close(() => r())))); });
+const audio = (...chunks: Buffer[]): AsyncIterable<Buffer> => ({ async *[Symbol.asyncIterator]() { yield* chunks; } });
 
 describe('WyomingVoiceClient', () => {
   it('discovers wake models and Piper voices from describe/info', async () => {
@@ -56,8 +57,24 @@ describe('WyomingVoiceClient', () => {
       if (e.type === 'synthesize') { send({ type: 'audio-start', data: { rate: 22050, width: 2, channels: 1 } }); send({ type: 'audio-chunk' }, Buffer.from([1, 2])); send({ type: 'audio-stop' }); }
     });
     const c = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri });
-    expect(await c.transcribe(Buffer.from([0, 0]), new AbortController().signal)).toBe('hello');
+    expect(await c.transcribe(audio(Buffer.from([0, 0])), new AbortController().signal)).toBe('hello');
     expect(await c.synthesize('hello', 'voice', new AbortController().signal)).toEqual({ pcm: Buffer.from([1, 2]), rate: 22050, width: 2, channels: 1 });
+  });
+  it('streams bounded chunks and accepts VAD transcript before source end', async () => {
+    const seen: any[] = []; let closed = false;
+    let stopReceived!: () => void;
+    const stopped = new Promise<void>(resolve => { stopReceived = resolve; });
+    const uri = await fake((e, send) => { seen.push(e); if (e.type === 'audio-chunk') send({ type: 'transcript', data: { text: 'early' } }); if (e.type === 'audio-stop') stopReceived(); });
+    let first = true;
+    const source = { [Symbol.asyncIterator]() { return { next: () => first ? (first = false, Promise.resolve({ done: false as const, value: Buffer.alloc(8) })) : new Promise<IteratorResult<Buffer>>(() => {}), return: async () => { closed = true; return { done: true as const, value: undefined }; } }; } };
+    await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(source, new AbortController().signal)).resolves.toBe('early');
+    await stopped;
+    expect(seen.map(e => e.type)).toEqual(['transcribe', 'audio-start', 'audio-chunk', 'audio-stop']);
+    expect(closed).toBe(true);
+  });
+  it('rejects an utterance exceeding the aggregate byte limit', async () => {
+    const uri = await fake(() => {});
+    await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(audio(Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024), Buffer.alloc(64 * 1024)), new AbortController().signal)).rejects.toThrow(/utterance too large/);
   });
   it('detects wake after sending model selection and audio frames, then closes the iterator', async () => {
     const received: any[] = [];
@@ -84,31 +101,31 @@ describe('WyomingVoiceClient', () => {
   it('rejects oversized transcriptions and invalid declared lengths', async () => {
     const uri = await fake((e, send) => {});
     const client = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri });
-    await expect(client.transcribe(Buffer.alloc(8 * 1024 * 1024 + 1), new AbortController().signal)).rejects.toThrow(/too large/);
+    await expect(client.transcribe(audio(Buffer.alloc(64 * 1024 + 1)), new AbortController().signal)).rejects.toThrow(/too large/);
   });
   it('rejects pending reads on abort and malformed declared lengths', async () => {
     const uri = await fake(() => {});
     const client = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri });
     const controller = new AbortController();
-    const pending = client.transcribe(Buffer.from([0]), controller.signal);
+    const pending = client.transcribe(audio(Buffer.from([0])), controller.signal);
     setTimeout(() => controller.abort(), 5);
     await expect(pending).rejects.toThrow(/aborted/);
     const bad = net.createServer(socket => socket.once('data', () => socket.write('{"type":"transcript","data_length":-1}\n')));
     bad.listen(0, '127.0.0.1'); servers.push(bad);
     const badUri = await new Promise<string>(resolve => bad.once('listening', () => resolve(`tcp://127.0.0.1:${(bad.address() as net.AddressInfo).port}`)));
-    await expect(new WyomingVoiceClient({ wake: badUri, stt: badUri, tts: badUri }).transcribe(Buffer.from([0]), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming length/);
+    await expect(new WyomingVoiceClient({ wake: badUri, stt: badUri, tts: badUri }).transcribe(audio(Buffer.from([0])), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming length/);
   });
   it('rejects malformed JSON header shapes safely', async () => {
     for (const line of ['null', '[]', '{"type":3}', '{}']) {
       const bad = net.createServer(socket => socket.once('data', () => socket.write(`${line}\n`)));
       bad.listen(0, '127.0.0.1'); servers.push(bad);
       const uri = await new Promise<string>(resolve => bad.once('listening', () => resolve(`tcp://127.0.0.1:${(bad.address() as net.AddressInfo).port}`)));
-      await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(Buffer.from([0]), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming header/);
+      await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(audio(Buffer.from([0])), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming header/);
     }
   });
   it('rejects already-aborted calls before connecting', async () => {
     const controller = new AbortController(); controller.abort();
-    await expect(new WyomingVoiceClient({ wake: 'tcp://127.0.0.1:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' }).transcribe(Buffer.from([1]), controller.signal)).rejects.toThrow(/aborted/);
+    await expect(new WyomingVoiceClient({ wake: 'tcp://127.0.0.1:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' }).transcribe(audio(Buffer.from([1])), controller.signal)).rejects.toThrow(/aborted/);
   });
   it('does not write additional audio frames after abort during wake setup', async () => {
     const controller = new AbortController(); let started!: () => void;
@@ -177,7 +194,7 @@ describe('WyomingVoiceClient', () => {
     const received = new Promise<void>(resolve => { requestReceived = resolve; });
     const uri = await fake(e => { if (e.type === 'audio-stop') requestReceived(); });
     try {
-      const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(Buffer.from([0]), new AbortController().signal);
+      const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(audio(Buffer.from([0])), new AbortController().signal);
       await received;
       await expect(pending).rejects.toThrow(/timed out/);
     } finally { vi.restoreAllMocks(); }
@@ -186,7 +203,7 @@ describe('WyomingVoiceClient', () => {
     const spies = [vi.spyOn(console, 'log'), vi.spyOn(console, 'info'), vi.spyOn(console, 'warn'), vi.spyOn(console, 'error')];
     try {
       const uri = await fake((e, send) => { if (e.type === 'audio-stop') send({ type: 'transcript', data: { text: 'private transcript' } }); });
-      await new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(Buffer.from('private audio'), new AbortController().signal);
+      await new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(audio(Buffer.from('private audio')), new AbortController().signal);
       expect(spies.flatMap(spy => spy.mock.calls.flat()).join(' ')).not.toMatch(/private audio|private transcript/);
     } finally { spies.forEach(spy => spy.mockRestore()); }
   });
