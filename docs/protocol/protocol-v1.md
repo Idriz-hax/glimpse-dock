@@ -21,7 +21,7 @@ Commands are strict `{ v: 1, requestId, type, payload }` objects. Current types 
 | `state.set-activity` | `{ activity: Activity }` | Owner or valid agent; transition must be allowed |
 | `state.set-progress` | `{ progress: 0..100 | null }` | Owner or valid agent; `null` clears unknown progress |
 | `display.set-style` | `{ style: "quiet" | "ambient" }` | Owner only |
-| `metric.set-value` | `{ id: "tasks" | "tools", value: integer }` | Owner or valid agent; target must exist |
+| `metric.set-value` | `{ id: string (1–64 characters), value: integer }` | Target must be an existing metric widget; owner may update any widget, while an agent may update only its own |
 | `demo.simulate` | `{}` | Owner, only when Demo is enabled; server scheduler uses same boundary |
 | `demo.set-enabled` | `{ enabled: boolean }` | Owner, only when Demo is enabled |
 | `demo.reset` | `{}` | Owner, only when Demo is enabled |
