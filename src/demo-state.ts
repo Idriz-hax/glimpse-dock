@@ -1,12 +1,13 @@
 export type Level = 'info' | 'success' | 'warning';
 export type Activity = { id: number; time: string; title: string; detail: string; level: Level };
-export type Widget = { id: string; label: string; value: string; sub: string; tone: 'purple' | 'cyan' | 'green' | 'amber' };
+import { WidgetSchema, type Widget as ProtocolWidget } from './shared/protocol';
+export type Widget = ProtocolWidget;
 export type State = { agent: string; task: string; progress: number | null; running: boolean; activity: 'idle' | 'thinking' | 'tool-use' | 'responding' | 'waiting' | 'completed' | 'error'; displayStyle: 'quiet' | 'ambient'; widgets: Widget[]; logs: Activity[] };
 
 const defaults: Widget[] = [
-  { id: 'tasks', label: 'Tasks completed', value: '24', sub: '+6 in this session', tone: 'purple' },
-  { id: 'tools', label: 'Tool calls', value: '128', sub: 'All systems nominal', tone: 'cyan' },
-  { id: 'runtime', label: 'Session uptime', value: '02:34', sub: 'Local demo session', tone: 'green' },
+  { version: 1, id: 'tasks', owner: 'demo', title: 'Tasks completed', content: { kind: 'metric', label: 'Tasks completed', value: '24', caption: '+6 in this session' }, placement: 'primary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null },
+  { version: 1, id: 'tools', owner: 'demo', title: 'Tool calls', content: { kind: 'metric', label: 'Tool calls', value: '128', caption: 'All systems nominal' }, placement: 'primary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null },
+  { version: 1, id: 'runtime', owner: 'demo', title: 'Session uptime', content: { kind: 'metric', label: 'Session uptime', value: '02:34', caption: 'Local demo session' }, placement: 'primary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null },
 ];
 
 export function initialState(): State {
@@ -22,19 +23,23 @@ export function validateState(value: unknown): State | null {
       !(state.progress === null || typeof state.progress === 'number' && Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 100) ||
       !['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'].includes(String(state.activity)) || !['quiet', 'ambient'].includes(String(state.displayStyle)) ||
       !Array.isArray(state.widgets) || !Array.isArray(state.logs) || state.logs.length > 40) return null;
-  const widgets = state.widgets as unknown[];
-  if (!widgets.every(item => {
-    if (typeof item !== 'object' || item === null) return false;
+  if (state.widgets.length > 32) return null;
+  const widgets = state.widgets.map(item => {
+    if (typeof item !== 'object' || item === null) return null;
     const w = item as Record<string, unknown>;
-    return typeof w.id === 'string' && typeof w.label === 'string' && typeof w.value === 'string' && typeof w.sub === 'string' && ['purple', 'cyan', 'green', 'amber'].includes(String(w.tone));
-  })) return null;
+    if (Object.keys(w).sort().join(',') === 'id,label,sub,tone,value' && typeof w.id === 'string' && typeof w.label === 'string' && typeof w.value === 'string' && typeof w.sub === 'string' && ['purple', 'cyan', 'green', 'amber'].includes(String(w.tone))) {
+      return WidgetSchema.safeParse({ version: 1, id: w.id, owner: 'owner', title: w.label, content: { kind: 'metric', label: w.label, value: w.value, caption: w.sub }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null }).success ? { version: 1, id: w.id, owner: 'owner', title: w.label, content: { kind: 'metric', label: w.label, value: w.value, caption: w.sub }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null } : null;
+    }
+    return WidgetSchema.safeParse(item).success ? item : null;
+  });
+  if (widgets.some(widget => widget === null)) return null;
   const logs = state.logs as unknown[];
   if (!logs.every(item => {
     if (typeof item !== 'object' || item === null) return false;
     const log = item as Record<string, unknown>;
     return typeof log.id === 'number' && Number.isSafeInteger(log.id) && log.id >= 0 && typeof log.time === 'string' && typeof log.title === 'string' && typeof log.detail === 'string' && ['info', 'success', 'warning'].includes(String(log.level));
   })) return null;
-  return value as State;
+  return { ...(value as State), widgets: widgets as Widget[] };
 }
 
 export function loadState(saved: string | null, fallback: State = initialState()): State {

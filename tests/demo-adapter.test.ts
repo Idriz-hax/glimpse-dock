@@ -18,7 +18,7 @@ describe('Demo adapter', () => {
     expect(advanced.logs.length).toBeGreaterThan(original.logs.length);
     const paused = transitionDemo(advanced, { v: 1, requestId: '2', type: 'demo.set-enabled', payload: { enabled: false } });
     expect(paused.running).toBe(false);
-    expect(transitionDemo(original, { v: 1, requestId: 'widget', type: 'demo.add-widget', payload: {} }).widgets).toHaveLength(4);
+    expect(transitionDemo(original, { v: 1, requestId: 'widget', type: 'widget.create', payload: { widget: { version: 1, id: 'extra', title: 'Extra', content: { kind: 'metric', label: 'Extra', value: '0' }, placement: 'secondary', expiresAt: null } } }).widgets).toHaveLength(4);
     expect(transitionDemo(paused, { v: 1, requestId: '3', type: 'demo.reset', payload: {} })).toEqual(original);
     vi.restoreAllMocks();
   });

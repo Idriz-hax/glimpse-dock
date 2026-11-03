@@ -26,10 +26,9 @@ export function transitionDemo(state: State, command: CommandRequest): State {
   };
 
   if (command.type === 'demo.reset') return createDemoState();
-  if (command.type === 'demo.add-widget') {
+  if (command.type === 'widget.create') {
     if (next.widgets.length >= 32) return next;
-    const number = next.widgets.length + 1;
-    next.widgets.push({ id: `custom${number}`, label: `Custom metric ${number - 3}`, value: '0', sub: 'Created locally', tone: 'amber' });
+    next.widgets.push({ ...command.payload.widget, owner: 'demo', visible: true, createdAt: Date.now(), updatedAt: Date.now() });
     addLog('Widget created', 'Added a new custom metric', 'success');
     return next;
   }
@@ -50,8 +49,8 @@ export function transitionDemo(state: State, command: CommandRequest): State {
 
   const actions = [
     () => { next.progress = Math.min(100, (next.progress ?? 0) + 11); next.activity = next.progress === 100 ? 'completed' : 'thinking'; addLog(next.activity === 'completed' ? 'Task completed' : 'Task progress updated', `Current task advanced to ${next.progress}%`, 'success'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget) widget.value = String(Number(widget.value) + 3); next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget) widget.value = String(Number(widget.value) + 1); next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget?.content.kind === 'metric') widget.content = { ...widget.content, value: String(Number(widget.content.value) + 3) }; next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget?.content.kind === 'metric') widget.content = { ...widget.content, value: String(Number(widget.content.value) + 1) }; next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
     () => { startFreshTask(); next.progress = 28; addLog('New task started', next.task); },
   ];
   actions[Math.floor(Math.random() * actions.length)]();

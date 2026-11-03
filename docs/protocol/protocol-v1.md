@@ -25,7 +25,10 @@ Commands are strict `{ v: 1, requestId, type, payload }` objects. Current types 
 | `demo.simulate` | `{}` | Owner, only when Demo is enabled; server scheduler uses same boundary |
 | `demo.set-enabled` | `{ enabled: boolean }` | Owner, only when Demo is enabled |
 | `demo.reset` | `{}` | Owner, only when Demo is enabled |
-| `demo.add-widget` | `{}` | Owner, only when Demo is enabled |
+| `widget.create` | `{ widget: { version: 1, id, title, content, placement, expiresAt } }` | Owner is assigned server-side |
+| `widget.update` | `{ id, title?, content?, placement?, expiresAt? }` | Owner is assigned server-side |
+| `widget.set-visibility` | `{ id, visible }` | Owner is assigned server-side |
+| `widget.remove` | `{ id }` | Owner is assigned server-side |
 
 Owner commands POST to `/api/command` with the command plus a `csrf` field. Agent commands use the same endpoint and command object with `Authorization: Bearer <credential>`; agent requests do not use browser cookies or CSRF. Display sessions cannot mutate state. Commands are not retried automatically by the browser.
 

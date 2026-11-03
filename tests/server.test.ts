@@ -73,7 +73,7 @@ describe('backend', () => {
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const result = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'metric', type: 'metric.set-value', payload: { id: 'tasks', value: 45 } } });
     expect(result.statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets.find((widget: {id:string}) => widget.id === 'tasks').value).toBe('45');
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets.find((widget: {id:string;content:{value:string}}) => widget.id === 'tasks').content.value).toBe('45');
   });
   it('allows owners to change display style and persists the state shape defaults', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });

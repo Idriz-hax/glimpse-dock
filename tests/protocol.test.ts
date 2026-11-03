@@ -21,7 +21,9 @@ describe('protocol v1', () => {
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r8', type: 'task.update' }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r9', type: 'metric.set-value', payload: { id: 'runtime', value: 10 } }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r10', type: 'task.complete', payload: {}, extra: true }).success).toBe(false);
-    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r11', type: 'demo.add-widget', payload: {} }).success).toBe(true);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r11', type: 'demo.add-widget', payload: {} }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'create', type: 'widget.create', payload: { widget: { version: 1, id: 'one', title: 'One', content: { kind: 'metric', label: 'One', value: '1' }, placement: 'primary', expiresAt: null } } }).success).toBe(true);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'create', type: 'widget.create', payload: { widget: { version: 2, id: 'one', title: 'One', content: { kind: 'unknown' }, placement: 'invalid' } } }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r12', type: 'display.set-style', payload: { style: 'quiet' } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r13', type: 'display.set-style', payload: { style: 'ambient' } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r14', type: 'display.set-style', payload: { style: 'neon' } }).success).toBe(false);
@@ -54,7 +56,30 @@ describe('protocol v1', () => {
   });
 
   it('validates structured errors', () => {
+    expect(ErrorResponseSchema.safeParse({ v: 1, error: { code: 'NOT_FOUND', message: 'Not found', requestId: 'r1' } }).success).toBe(true);
     expect(ErrorResponseSchema.safeParse({ v: 1, error: { code: 'FORBIDDEN', message: 'Not allowed', requestId: 'r1' } }).success).toBe(true);
     expect(ErrorResponseSchema.safeParse({ v: 1, error: { code: 'SQL_ERROR', message: 'internal details', requestId: 'r1' } }).success).toBe(false);
+  });
+
+  it('normalizes persisted legacy metric widgets', () => {
+    const state = initialState();
+    const legacy = { ...state, widgets: [{ id: 'old', label: 'Old label', value: '7', sub: 'Old info', tone: 'cyan' }] };
+    expect(ProtocolStateSchema.parse(legacy).widgets[0]).toEqual({ version: 1, id: 'old', owner: 'owner', title: 'Old label', content: { kind: 'metric', label: 'Old label', value: '7', caption: 'Old info' }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null });
+  });
+
+  it('validates every structured content kind and enforces content bounds', () => {
+    const base = { version: 1, id: 'valid', owner: 'owner', title: 'Title', placement: 'primary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null };
+    for (const content of [{ kind: 'text', text: 'Hi' }, { kind: 'status', label: 'Ready', tone: 'success' }, { kind: 'metric', label: 'Count', value: '3' }, { kind: 'progress', label: 'Work', value: null }, { kind: 'visual', primitives: [{ kind: 'rect', x: 0, y: 0, width: 100, height: 100, color: 'cyan' }] }]) {
+      expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content }] }).success).toBe(true);
+    }
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, version: 2, content: { kind: 'text', text: 'x' } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content: { kind: 'progress', label: 'Work', value: 101 } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content: { kind: 'status', label: 'Ready', tone: 'neon' } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, placement: 'overlay', content: { kind: 'text', text: 'x' } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content: { kind: 'unknown', text: 'x' } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content: { kind: 'visual', primitives: [{ kind: 'rect', x: 0, y: 0, width: 1, height: 1, color: 'neon' }] } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content: { kind: 'text', text: 'x'.repeat(4097) } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [{ ...base, content: { kind: 'visual', primitives: Array(65).fill({ kind: 'circle', cx: 1, cy: 1, radius: 1, color: 'cyan' }) } }] }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: Array(13).fill({ ...base, content: { kind: 'text', text: 'x' } }) }).success).toBe(false);
   });
 });

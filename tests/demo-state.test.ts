@@ -9,7 +9,12 @@ describe('demo state validation', () => {
 
   it('restores valid saved state', () => {
     const saved = { ...initialState(), progress: 42, widgets: [{ id: 'x', label: 'X', value: '1', sub: 's', tone: 'cyan' }], logs: [{ id: 2, time: 'now', title: 't', detail: 'd', level: 'warning' }] };
-    expect(loadState(JSON.stringify(saved))).toEqual(saved);
+    expect(loadState(JSON.stringify(saved))).toMatchObject({ progress: 42, widgets: [{ version: 1, id: 'x', owner: 'owner', title: 'X', content: { kind: 'metric', value: '1', caption: 's' }, placement: 'secondary' }], logs: saved.logs });
+  });
+
+  it('normalizes saved legacy widgets and preserves their display text', () => {
+    const saved = { ...initialState(), widgets: [{ id: 'old', label: 'Old label', value: '7', sub: 'Old info', tone: 'cyan' }] };
+    expect(loadState(JSON.stringify(saved)).widgets[0]).toEqual({ version: 1, id: 'old', owner: 'owner', title: 'Old label', content: { kind: 'metric', label: 'Old label', value: '7', caption: 'Old info' }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null });
   });
 
   it('falls back to defaults for malformed JSON or invalid state', () => {
