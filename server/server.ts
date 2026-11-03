@@ -10,6 +10,8 @@ import { resolve } from 'node:path';
 import { canTransitionActivity, CommandRequestSchema, ProtocolStateSchema, type CommandRequest } from '../src/shared/protocol.ts';
 import { createDemoState, transitionDemo } from './adapters/demo.ts';
 import { createWidget, updateWidget, setWidgetVisibility, removeWidget, removeExpiredWidgets, type WidgetPrincipal } from './widgets.ts';
+import { HermesApiClient } from './voice/hermes-api.ts';
+import { WyomingVoiceClient } from './voice/wyoming.ts';
 
 const scrypt = promisify(scryptCb);
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -25,7 +27,18 @@ const sameLoopbackOrigin = (origin: string | undefined, host: string | undefined
   } catch { return false; }
 };
 const empty = ProtocolStateSchema.parse({ agent: '', task: '', progress: 0, running: false, widgets: [], logs: [] });
-type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; demo?: boolean; now?: () => number };
+type VoiceHermesClient = Pick<HermesApiClient, 'createSession'>;
+type VoiceWyomingClient = Pick<WyomingVoiceClient, 'listWakeModels' | 'listVoices'>;
+type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; demo?: boolean; now?: () => number; voiceClients?: { hermes?: VoiceHermesClient; wyoming?: VoiceWyomingClient } };
+
+function configuredHermesUrl(value: string | undefined): string | undefined {
+  const candidate = value ?? 'http://127.0.0.1:8642';
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'http:' || !isLoopback(url.hostname) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) return;
+    return url.origin;
+  } catch { return; }
+}
 
 export async function createServer(options: Options = {}): Promise<FastifyInstance> {
   const db = new Database(options.database ?? 'glimpse-dock.sqlite');
@@ -76,12 +89,95 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        if(!sameLoopbackOrigin(req.headers.origin, req.headers.host)) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
     }
   });
-  const auth = (req: any) => {
-    const raw = req.cookies.session; if (!raw) return undefined;
-    const row = db.prepare('SELECT role,csrf,expires FROM sessions WHERE digest=?').get(hash(raw)) as any;
-    return row && row.expires > Date.now() ? { ...row, raw, digest:hash(raw) } : undefined;
-  };
-   const tx = db.transaction((next: typeof state, rev: number, detail: string, nextSource: string) => {
+   const auth = (req: any) => {
+     const raw = req.cookies.session; if (!raw) return undefined;
+     const row = db.prepare('SELECT role,csrf,expires FROM sessions WHERE digest=?').get(hash(raw)) as any;
+     return row && row.expires > Date.now() ? { ...row, raw, digest:hash(raw) } : undefined;
+   };
+   const configuredUrl = configuredHermesUrl(process.env.HERMES_API_SERVER_URL);
+   const hermesKey = process.env.HERMES_API_SERVER_KEY?.trim();
+   const hermesVoice = options.voiceClients?.hermes ?? (configuredUrl && hermesKey ? new HermesApiClient(configuredUrl, hermesKey) : undefined);
+   const wakeUri = process.env.WYOMING_WAKE_URI;
+   const sttUri = process.env.WYOMING_STT_URI;
+   const ttsUri = process.env.WYOMING_TTS_URI;
+   let configuredWyoming: WyomingVoiceClient | undefined;
+   if (wakeUri && sttUri && ttsUri) {
+     try { configuredWyoming = new WyomingVoiceClient({ wake: wakeUri, stt: sttUri, tts: ttsUri }); } catch { /* invalid endpoints remain unavailable */ }
+   }
+   const wyomingVoice = options.voiceClients?.wyoming ?? configuredWyoming;
+   let sessionLock = Promise.resolve();
+   const withVoiceSessionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+     const previous = sessionLock;
+     let release!: () => void;
+     sessionLock = new Promise<void>(resolve => { release = resolve; });
+     await previous;
+     try { return await operation(); } finally { release(); }
+   };
+   // Private WS-phase hook: reset remains available until a voice socket/run can be active.
+   let hasActiveVoiceSession = () => false;
+   const voicePreferenceKey = 'voice.settings';
+   const hermesSessionKey = 'voice.hermesSession';
+   const ownerVoiceSession = (req: any) => {
+     const session = auth(req);
+     return session?.role === 'owner' ? session : undefined;
+   };
+   const voiceForbidden = (reply: any) => reply.code(403).send(errorBody('FORBIDDEN', 'Forbidden'));
+   const voiceUnavailable = (reply: any) => reply.code(503).send(errorBody('UNAVAILABLE', 'Voice service unavailable'));
+   const voiceDiscovery = async () => {
+     if (!wyomingVoice) return { wakeOk: false, voicesOk: false, wakeModels: [] as string[], voices: [] as string[] };
+     const [wake, voices] = await Promise.allSettled([wyomingVoice.listWakeModels(), wyomingVoice.listVoices()]);
+     const wakeModels = wake.status === 'fulfilled' && Array.isArray(wake.value)
+       ? wake.value.flatMap(model => typeof model?.name === 'string' && model.name.length <= 256 ? [model.name] : []).slice(0, 100)
+       : [];
+     const voiceNames = voices.status === 'fulfilled' && Array.isArray(voices.value)
+       ? voices.value.filter(name => typeof name === 'string' && name.length > 0 && name.length <= 256).slice(0, 100)
+       : [];
+     return { wakeOk: wake.status === 'fulfilled', voicesOk: voices.status === 'fulfilled', wakeModels, voices: voiceNames };
+   };
+   const createHermesSession = async (replace: boolean): Promise<boolean> => withVoiceSessionLock(async () => {
+     if (!hermesVoice) return false;
+     if (!replace) {
+       const existing = read(hermesSessionKey)?.value;
+       if (existing && existing.length <= 1024) return true;
+     }
+     const id = await hermesVoice.createSession();
+     if (typeof id !== 'string' || !id.trim() || id.length > 1024) return false;
+     db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(hermesSessionKey, id);
+     return true;
+   });
+   app.get('/api/voice/status', async (req: any, reply) => {
+     if (!ownerVoiceSession(req)) return voiceForbidden(reply);
+     const discovery = await voiceDiscovery();
+     return { availability: { hermes: Boolean(hermesVoice), wyoming: discovery.wakeOk && discovery.voicesOk }, wakeModels: discovery.wakeModels, voices: discovery.voices };
+   });
+   app.post('/api/voice/settings', async (req: any, reply) => {
+     const owner = ownerVoiceSession(req);
+     if (!owner || req.body?.csrf !== owner.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+     const body = req.body;
+     if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice'].includes(key))) {
+       return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice settings'));
+     }
+     if (!wyomingVoice) return voiceUnavailable(reply);
+     const discovery = await voiceDiscovery();
+     if (!discovery.wakeOk || !discovery.voicesOk) return voiceUnavailable(reply);
+     if (!discovery.wakeModels.includes(body.wakeModel) || !discovery.voices.includes(body.voice)) return reply.code(400).send(errorBody('INVALID_INPUT', 'Voice model or voice is not installed'));
+     db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice }));
+     return { saved: true };
+   });
+   app.post('/api/voice/session', async (req: any, reply) => {
+     const owner = ownerVoiceSession(req);
+     if (!owner || req.body?.csrf !== owner.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+     try { return await createHermesSession(false) ? { ready: true } : voiceUnavailable(reply); }
+     catch { return voiceUnavailable(reply); }
+   });
+   app.post('/api/voice/session/reset', async (req: any, reply) => {
+     const owner = ownerVoiceSession(req);
+     if (!owner || req.body?.csrf !== owner.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+     if (hasActiveVoiceSession()) return reply.code(409).send(errorBody('CONFLICT', 'Voice session is active'));
+     try { return await createHermesSession(true) ? { ready: true } : voiceUnavailable(reply); }
+     catch { return voiceUnavailable(reply); }
+   });
+    const tx = db.transaction((next: typeof state, rev: number, detail: string, nextSource: string) => {
      db.prepare('INSERT OR REPLACE INTO kv VALUES (?,?)').run('state', JSON.stringify(next));
      db.prepare('INSERT OR REPLACE INTO kv VALUES (?,?)').run('revision', String(rev));
      db.prepare('INSERT OR REPLACE INTO kv VALUES (?,?)').run('source', nextSource);
