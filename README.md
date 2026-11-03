@@ -4,7 +4,7 @@
 
 ## Requirements and quick start
 
-Requires Node.js 20.19+ or 22.12+ and npm.
+Requires Node.js 22.12+ or 24 and npm. The CI matrix tests Node.js 22 and 24.
 
 ```bash
 npm ci

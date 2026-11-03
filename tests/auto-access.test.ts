@@ -1,0 +1,71 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { createServer, parseLocalAutoAccess, warnOwnerAutoAccess } from '../server/server.ts';
+
+describe('local auto-access', () => {
+  let app: Awaited<ReturnType<typeof createServer>> | undefined;
+  afterEach(async () => { await app?.close(); app = undefined; });
+  it('strictly parses startup configuration and warns for owner mode', () => {
+    expect(parseLocalAutoAccess(undefined)).toBe('off');
+    for (const value of ['OWNER', ' owner', '', 'true']) expect(() => parseLocalAutoAccess(value)).toThrow();
+    const warnings: string[] = [];
+    warnOwnerAutoAccess('owner', message => warnings.push(message));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('WARNING:');
+    warnOwnerAutoAccess('display', message => warnings.push(message));
+    expect(warnings).toHaveLength(1);
+  });
+  it('is unavailable by default and requires exact same-origin loopback headers', async () => {
+    app = await createServer({ database: ':memory:' });
+    const route = (headers: Record<string,string>) => app!.inject({ method: 'POST', url: '/api/local-auto-access', headers, payload: { role: 'owner' } });
+    expect((await route({ origin: 'http://localhost:80', host: 'localhost:80' })).statusCode).toBe(403);
+    app = await createServer({ database: ':memory:', localAutoAccess: 'display' });
+    expect((await route({ host: 'localhost:80' })).statusCode).toBe(403);
+    expect((await route({ origin: 'http://localhost:80', host: '127.0.0.1:80' })).statusCode).toBe(403);
+    expect((await route({ origin: 'https://localhost', host: 'localhost' })).statusCode).toBe(403);
+    expect((await route({ origin: 'http://evil.test', host: 'localhost' })).statusCode).toBe(403);
+    const access = await app.inject({ method: 'POST', url: '/api/local-auto-access', headers: { origin: 'http://localhost:80', host: 'localhost:80' }, payload: { role: 'owner' } });
+    expect(access.statusCode).toBe(200);
+    expect(access.json().role).toBe('display');
+    expect(access.json()).not.toHaveProperty('token');
+    expect((await app.inject({ method: 'POST', url: '/api/local-auto-access', remoteAddress: '192.0.2.1', headers: { origin: 'http://localhost:80', host: 'localhost:80' } })).statusCode).toBe(403);
+    const cookie = String(access.headers['set-cookie']).split(';')[0];
+    expect((await app.inject({ url: '/api/sessions', headers: { cookie } })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: access.json().csrf, command: { v:1, requestId:'x', type:'task.update', payload:{task:'no'} } } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: '/api/logout', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: access.json().csrf } })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).statusCode).toBe(401);
+  });
+  it('only bootstraps owner after password setup', async () => {
+    app = await createServer({ database: ':memory:', localAutoAccess: 'owner', bootstrapSecret: 'secret' });
+    const headers = { origin: 'http://localhost:80', host: 'localhost:80' };
+    expect((await app.inject({ method: 'POST', url: '/api/local-auto-access', headers })).statusCode).toBe(403);
+    await app.inject({ method: 'POST', url: '/api/setup', headers, payload: { secret: 'secret', password: 'long-enough-password' } });
+    const setupCookie = String((await app.inject({ method: 'POST', url: '/api/login', headers, payload: { password: 'long-enough-password' } })).headers['set-cookie']).split(';')[0];
+    const existing = new Set((await app.inject({ url: '/api/sessions', headers: { cookie: setupCookie } })).json().sessions.map((session: { id: string }) => session.id));
+    const access = await app.inject({ method: 'POST', url: '/api/local-auto-access', headers });
+    expect(access.statusCode).toBe(200);
+    expect(access.json().role).toBe('owner');
+    const ownerCookie = String(access.headers['set-cookie']).split(';')[0];
+    expect((await app.inject({ url: '/api/session', headers: { cookie: ownerCookie } })).json().ownerAutoAccess).toBe(true);
+    expect((await app.inject({ url: '/api/session' })).json()).not.toHaveProperty('ownerAutoAccess');
+    const sessions = await app.inject({ url: '/api/sessions', headers: { cookie: ownerCookie } });
+    const issued = sessions.json().sessions.find((session: { id: string }) => !existing.has(session.id));
+    expect(issued.expires).toBeGreaterThan(Date.now());
+    expect(issued.expires).toBeLessThanOrEqual(Date.now() + 86400000);
+    expect((await app.inject({ method: 'DELETE', url: `/api/sessions/${issued.id}`, headers: { cookie: ownerCookie, origin: headers.origin }, payload: { csrf: access.json().csrf } })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/session', headers: { cookie: ownerCookie } })).json().role).toBe(null);
+  });
+  it('issues a one-hour display session that the owner can revoke', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'secret', localAutoAccess: 'display' });
+    const headers = { origin: 'http://localhost:80', host: 'localhost:80' };
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers, payload: { secret: 'secret', password: 'long-enough-password' } });
+    const ownerCookie = String(setup.headers['set-cookie']).split(';')[0];
+    const access = await app.inject({ method: 'POST', url: '/api/local-auto-access', headers });
+    const displayCookie = String(access.headers['set-cookie']).split(';')[0];
+    const session = (await app.inject({ url: '/api/sessions', headers: { cookie: ownerCookie } })).json().sessions.find((item: { role: string }) => item.role === 'display');
+    expect(session.expires).toBeGreaterThan(Date.now());
+    expect(session.expires).toBeLessThanOrEqual(Date.now() + 60 * 60_000);
+    expect((await app.inject({ method: 'DELETE', url: `/api/sessions/${session.id}`, headers: { ...headers, cookie: ownerCookie }, payload: { csrf: setup.json().csrf } })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie: displayCookie } })).statusCode).toBe(401);
+  });
+});

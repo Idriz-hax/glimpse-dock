@@ -39,6 +39,22 @@ export function canTransitionActivity(from: z.infer<typeof ActivitySchema>, to: 
   return ActivityTransitions[from].includes(to as never);
 }
 export const DisplayStyleSchema = z.enum(['quiet', 'ambient']);
+export const DisplayPreferencesValueSchema = z.object({
+  scale: z.enum(['compact', 'normal', 'large']),
+  reducedMotion: z.boolean(),
+  intensity: z.enum(['subtle', 'balanced', 'vivid']),
+  showClock: z.boolean(),
+  showWidgets: z.boolean(),
+  layout: z.enum(['balanced', 'compact']),
+}).strict();
+export const DisplayPreferencesSchema = DisplayPreferencesValueSchema.extend({
+  scale: DisplayPreferencesValueSchema.shape.scale.default('normal'),
+  reducedMotion: DisplayPreferencesValueSchema.shape.reducedMotion.default(false),
+  intensity: DisplayPreferencesValueSchema.shape.intensity.default('balanced'),
+  showClock: DisplayPreferencesValueSchema.shape.showClock.default(true),
+  showWidgets: DisplayPreferencesValueSchema.shape.showWidgets.default(true),
+  layout: DisplayPreferencesValueSchema.shape.layout.default('balanced'),
+}).strict();
 
 const command = <T extends string, P extends z.ZodType>(type: T, payload: P) =>
   z.object({ v: z.literal(1), requestId: RequestIdSchema, type: z.literal(type), payload }).strict();
@@ -57,6 +73,7 @@ export const CommandRequestSchema = z.discriminatedUnion('type', [
   command('task.complete', EmptyPayloadSchema),
   command('metric.set-value', z.object({ id: z.string().min(1).max(64), value: z.number().int().min(0).max(9_999_999) }).strict()),
   command('display.set-style', z.object({ style: DisplayStyleSchema }).strict()),
+  command('display.preferences.set', z.object({ preferences: DisplayPreferencesValueSchema }).strict()),
 ]);
 
 const normalizeLegacyWidget = (widget: Record<string, unknown>) => ({ version: 1, id: widget.id, owner: 'owner', title: widget.label, content: { kind: 'metric', label: widget.label, value: widget.value, caption: widget.sub }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null });
@@ -85,6 +102,7 @@ export const ProtocolStateSchema = z.preprocess(value => {
   running: z.boolean(),
   activity: ActivitySchema.default('idle'),
   displayStyle: DisplayStyleSchema.default('quiet'),
+  displayPreferences: DisplayPreferencesSchema.prefault({}),
   widgets: z.array(WidgetSchema).max(32),
   logs: z.array(z.object({
     id: z.number().int().safe().nonnegative(),

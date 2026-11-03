@@ -4,8 +4,9 @@ import './auth/auth.css';
 import { resolveRoute } from './routes';
 import { renderDisplay } from './display/view';
 import { mountDisplayWidgets } from './display/widgets';
-import { bindAdminEvents, renderAdmin, type AdminPage, type SampleKind } from './admin/view';
+import { bindAdminEvents, renderAdmin, updatePreferenceSaveUI, type AdminDiagnostics, type AdminPage, type SampleKind } from './admin/view';
 import { renderDisplayGate, renderOwnerGate } from './auth/view';
+import { bootstrapSession } from './auth/bootstrap';
 import { type State } from './demo-state';
 import { commandForInput, validSnapshot, parseStateMessage } from './frontend-client';
 import { StateMessageSchema } from './shared/protocol';
@@ -17,6 +18,9 @@ let page: AdminPage = 'overview', state: State | null = null, role: string | nul
 let authMode: 'setup' | 'login' = 'login', gateError = '', gateStatus = '', gatePending = false, pairingCode = '', pairingStatus = '', pairingError = '', pairingPending = false;
 let socket: WebSocket | undefined, retry = 0, reconnectTimer: number | undefined, toastTimer: number | undefined;
 let streamConnected = false;
+let preferenceStatus = 'Saved';
+let ownerAutoAccess = false;
+let diagnostics: { status: 'idle' | 'loading' | 'error' | 'loaded'; error?: string; data?: AdminDiagnostics; displaySessionIds?: string[] } = { status: 'idle' };
 let stopVoice: (() => void) | undefined;
 const id = () => crypto.randomUUID();
 
@@ -24,9 +28,39 @@ function render() {
   document.body.classList.toggle('display-mode', displayMode);
   if (!role || (!displayMode && role !== 'owner')) { stopVoice?.(); stopVoice = undefined; app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
   if (!state) { app.textContent = 'Loading workspace…'; return; }
-  if (displayMode) { if (role === 'owner' && app.querySelector('.display-owner')) { mountDisplayWidgets(app, state.widgets); return; } stopVoice?.(); stopVoice = undefined; app.innerHTML = renderDisplay(state, demoMode, streamConnected, role === 'owner' ? 'owner' : 'display'); mountDisplayWidgets(app, state.widgets); if (role === 'owner') stopVoice = mountVoice(app, csrf); return; }
-  app.innerHTML = renderAdmin(state, page, { demoMode, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
-  bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), widgetAction: (type, payload) => { void send(type, payload); }, widgetSample: kind => sampleWidget(kind), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
+  if (displayMode) { if (role === 'owner' && app.querySelector('.display-owner')) { mountDisplayWidgets(app, state.widgets); return; } stopVoice?.(); stopVoice = undefined; app.innerHTML = renderDisplay(state, demoMode, streamConnected, role === 'owner' ? 'owner' : 'display', ownerAutoAccess); mountDisplayWidgets(app, state.widgets); if (role === 'owner') stopVoice = mountVoice(app, csrf); return; }
+     app.innerHTML = renderAdmin(state, page, { demoMode, preferenceStatus, diagnostics, disconnected: !streamConnected, ownerAutoAccess, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
+    bindAdminEvents(app, { page: next => { page = next; render(); if (['agents','displays','health'].includes(next)) void loadDiagnostics(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), widgetAction: (type, payload) => { void send(type, payload); }, widgetSample: kind => sampleWidget(kind), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, preferences: savePreferences, pair: pairDisplay, revokeDisplay: revokeDisplay, revokeAgent: revokeAgent, logout });
+}
+async function loadDiagnostics() {
+  diagnostics = { status: 'loading' }; render();
+  try {
+    const [data, sessionData] = await Promise.all([request('/api/admin/diagnostics'), request('/api/sessions')]);
+    diagnostics = { status: 'loaded', data, displaySessionIds: (sessionData.sessions as { id: string; role: string; expires: number }[]).filter(session => session.role === 'display').sort((a, b) => b.expires - a.expires).map(session => session.id) };
+  } catch (error) { diagnostics = { status: 'error', error: message(error) }; }
+  render();
+}
+async function revokeDisplay(index: number) {
+  const id = diagnostics.displaySessionIds?.[index]; if (!id) return;
+  try { await request(`/api/sessions/${encodeURIComponent(id)}`, { csrf }, 'DELETE'); await loadDiagnostics(); }
+  catch (error) { diagnostics = { ...diagnostics, status: 'error', error: message(error) }; render(); }
+}
+async function revokeAgent(id: string) {
+  try { await request(`/api/agents/${encodeURIComponent(id)}`, { csrf }, 'DELETE'); await loadDiagnostics(); }
+  catch (error) { diagnostics = { ...diagnostics, status: 'error', error: message(error) }; render(); }
+}
+async function savePreferences(preferences: State['displayPreferences']) {
+  preferenceStatus = 'Saving preferences…'; updatePreferenceSaveUI(app, preferenceStatus, true);
+  try {
+    await request('/api/command', { csrf, v: 1, requestId: id(), type: 'display.preferences.set', payload: { preferences } });
+    const snapshot = validSnapshot(await request('/api/state'));
+    if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.');
+    state = snapshot; preferenceStatus = 'Preferences saved';
+    updatePreferenceSaveUI(app, preferenceStatus, false);
+  } catch (error) {
+    preferenceStatus = `Could not save preferences: ${message(error)}`;
+    updatePreferenceSaveUI(app, preferenceStatus, false, state?.displayPreferences);
+  }
 }
 function sampleWidget(kind: SampleKind) {
   if (!state) return;
@@ -46,8 +80,8 @@ function bindGate() {
     } catch (error) { gateError = message(error); } finally { gatePending = false; render(); }
   });
 }
-async function request(path: string, body?: unknown) {
-  const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' });
+async function request(path: string, body?: unknown, method?: string) {
+  const response = await fetch(path, { method: method ?? (body === undefined ? 'GET' : 'POST'), headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) { if (response.status === 401) unauthenticated(); throw new Error(result?.error?.message || `Request failed (${response.status})`); }
   return result;
@@ -87,7 +121,7 @@ async function pairDisplay() {
 async function logout() { try { await request('/api/logout', { csrf }); } catch { /* Session is cleared locally regardless. */ } unauthenticated(); }
 function notify(text: string) { const toast = app.querySelector<HTMLElement>('#toast'); if (!toast) return; toast.textContent = text; toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 3000); }
 async function start() {
-  try { const session = await request('/api/session'); role = session.role; csrf = session.csrf ?? ''; demoMode = session.demoEnabled === true; if (!role) { authMode = session.setupRequired ? 'setup' : 'login'; render(); return; } if (!displayMode && role !== 'owner') { gateError = 'Display access is read-only. Sign in with an owner account.'; authMode = 'login'; render(); return; } await loadState(); connect(); }
+  try { const session = await bootstrapSession(request); role = session.role; csrf = session.csrf ?? ''; demoMode = session.demoEnabled === true; ownerAutoAccess = session.ownerAutoAccess === true; if (!role) { authMode = session.setupRequired ? 'setup' : 'login'; render(); return; } if (!displayMode && role !== 'owner') { gateError = 'Display access is read-only. Sign in with an owner account.'; authMode = 'login'; render(); return; } await loadState(); connect(); }
   catch (error) { gateError = message(error); role = null; render(); }
 }
 void start();

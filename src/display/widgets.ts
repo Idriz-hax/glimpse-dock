@@ -34,6 +34,11 @@ export function renderWidget(input: Widget, now = Date.now()): HTMLElement | nul
 }
 
 export function mountDisplayWidgets(root: HTMLElement, widgets: Widget[], now = Date.now()): void {
+  if (root.querySelector('.display')?.getAttribute('data-show-widgets') === 'false') {
+    root.querySelector('.display-widgets')?.setAttribute('hidden', '');
+    return;
+  }
+  root.querySelector('.display-widgets')?.removeAttribute('hidden');
   const visible = widgets.map(widget => ({ widget, element: renderWidget(widget, now) })).filter((item): item is { widget: Widget; element: HTMLElement } => item.element !== null);
   visible.sort((a, b) => a.widget.createdAt - b.widget.createdAt || a.widget.id.localeCompare(b.widget.id));
   for (const { widget, element } of visible.slice(0, 12)) root.querySelector(`[data-placement="${widget.placement}"]`)?.append(element);

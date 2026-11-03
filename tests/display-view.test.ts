@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { initialState } from '../src/demo-state';
 import { renderDisplay } from '../src/display/view';
 import { mountDisplayWidgets, renderWidget } from '../src/display/widgets';
@@ -78,6 +80,15 @@ describe('display render boundary', () => {
     expect(renderDisplay(initialState(), false)).not.toContain('NOT CONNECTED TO HERMES');
   });
 
+  it('warns on owner auto-access without turning voice on', () => {
+    const html = renderDisplay(initialState(), false, true, 'owner', true);
+    expect(html).toContain('Same-device owner access is active');
+    expect(html).toContain('Voice is off');
+    expect(html).toContain('data-voice-enable>Enable voice</button>');
+    expect(html).not.toContain('data-voice-enable disabled');
+    expect(renderDisplay(initialState(), false, true, 'owner', false)).not.toContain('Same-device owner access is active');
+  });
+
   it('renders malformed progress safely without exposing it in style or text', () => {
     for (const progress of [NaN, Infinity, -1, 101]) {
       const html = renderDisplay({ ...initialState(), progress });
@@ -105,6 +116,22 @@ describe('display render boundary', () => {
     expect(renderDisplay({ ...initialState(), displayStyle: 'ambient' })).toContain('display--ambient');
     expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).toContain('>Keep this task text</p>');
     expect(renderDisplay(initialState(), true, false)).toContain('Connection lost');
+  });
+
+  it('reflects shared preferences while retaining fullscreen display presentation', () => {
+    const state = { ...initialState(), displayPreferences: { ...initialState().displayPreferences, scale: 'large' as const, intensity: 'vivid' as const, layout: 'compact' as const, showClock: false, showWidgets: false, reducedMotion: true } };
+    const html = renderDisplay(state);
+    expect(html).toContain('display-scale--large display-intensity--vivid display-layout--compact display-reduced-motion');
+    expect(html).toContain('data-show-widgets="false"');
+    expect(html).not.toContain('display-clock');
+    expect(html).toContain('VISUAL DISPLAY');
+  });
+
+  it('keeps the OS reduced-motion override active when shared motion reduction is off', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/display.css'), 'utf8');
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.display \*/);
+    expect(css).toContain('.display-reduced-motion *');
+    expect(initialState().displayPreferences.reducedMotion).toBe(false);
   });
 
   it('renders owner voice stage while paired display remains voice-free', () => {
