@@ -16,7 +16,7 @@ export function renderWidget(input: Widget, now = Date.now()): HTMLElement | nul
   const content = widget.content;
   if (content.kind === 'text') card.append(node('p', content.text));
   else if (content.kind === 'status') { const p = node('p', content.label); p.className = 'display-slot-status'; p.dataset.tone = content.tone; card.append(p); }
-  else if (content.kind === 'metric') { const label = node('p', content.label); label.className = 'display-slot-label'; const value = node('p', `${content.value}${content.unit ? ` ${content.unit}` : ''}`); value.className = 'display-slot-value'; card.append(label, value); if (content.caption) card.append(node('p', content.caption)); }
+  else if (content.kind === 'metric') { if (content.label !== widget.title) { const label = node('p', content.label); label.className = 'display-slot-label'; card.append(label); } const value = node('p', `${content.value}${content.unit ? ` ${content.unit}` : ''}`); value.className = 'display-slot-value'; card.append(value); if (content.caption) card.append(node('p', content.caption)); }
   else if (content.kind === 'progress') { card.append(node('p', content.label)); if (content.value === null) card.append(node('p', 'Unknown')); else { const bar = node('div'); bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-label', content.label); bar.setAttribute('aria-valuemin', '0'); bar.setAttribute('aria-valuemax', '100'); bar.setAttribute('aria-valuenow', String(content.value)); const fill = node('span'); fill.style.width = `${content.value}%`; bar.append(fill); card.append(bar); } }
   else {
     const scene = svg('svg', { viewBox: '0 0 100 100', role: 'img', 'aria-label': `${widget.title} visual` });

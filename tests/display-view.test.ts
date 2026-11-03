@@ -1,8 +1,37 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initialState } from '../src/demo-state';
 import { renderDisplay } from '../src/display/view';
+import { renderWidget } from '../src/display/widgets';
+import { WidgetSchema } from '../src/shared/protocol';
+
+class TestElement {
+  children: TestElement[] = [];
+  dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
+  className = '';
+  textContent = '';
+  attributes: Record<string, string> = {};
+  constructor(readonly tagName: string) {}
+  append(...items: TestElement[]) { this.children.push(...items); }
+  setAttribute(name: string, value: string) { this.attributes[name] = value; }
+}
 
 describe('display render boundary', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('omits a duplicate metric label but keeps a distinct one', () => {
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => new TestElement(tag),
+      createElementNS: (_namespace: string, tag: string) => new TestElement(tag),
+    });
+    const base = { version: 1 as const, owner: 'owner', placement: 'primary' as const, visible: true, createdAt: 1, updatedAt: 1, expiresAt: null };
+    const metric = (id: string, title: string, label: string) => WidgetSchema.parse({ ...base, id, title, content: { kind: 'metric', label, value: '42' } });
+    const duplicate = renderWidget(metric('same', 'Jobs', 'Jobs'))!;
+    const distinct = renderWidget(metric('different', 'Queue', 'Jobs waiting'))!;
+    expect(duplicate.children.filter(child => child.className === 'display-slot-label')).toHaveLength(0);
+    expect(distinct.children.find(child => child.className === 'display-slot-label')?.textContent).toBe('Jobs waiting');
+  });
+
   it('keeps demo copy by default and uses neutral copy outside demo mode', () => {
     expect(renderDisplay(initialState())).toContain('LOCAL DEMO • NOT CONNECTED TO HERMES');
     expect(renderDisplay(initialState(), false)).toContain('LOCAL WORKSPACE');
