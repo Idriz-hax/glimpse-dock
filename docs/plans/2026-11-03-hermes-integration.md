@@ -1,5 +1,7 @@
 # Hermes Integration Implementation Plan
 
+**Execution status (2026-11-03):** Local implementation, tests, build, integration guide, and roadmap updates are complete. Live validation against the user's actual Hermes version and CLI/Gateway runtime remains pending; v0.22.6 is the pinned documentation/source baseline only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Integrate Hermes v0.22.6 through an opt-in Python plugin that reports privacy-preserving activity and submits agent-owned structured widget commands to Glimpse Dock.

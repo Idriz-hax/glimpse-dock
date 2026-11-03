@@ -2,7 +2,7 @@
 
 **Purpose:** a local visual workspace for monitoring AI-agent activity, with a separate Admin dashboard and paired read-only Visual Display.
 
-**Current state:** Milestones 1–4 are implemented in this worktree. A Fastify service owns shared state, persists it in SQLite, authenticates the single owner, pairs read-only display sessions, and accepts scoped bearer agent commands. The Display presents backend-owned activity and safe structured widgets; Admin manages all widget slots, while agents and the opt-in demo own their own widgets. Hermes itself is not integrated. Simulated agent activity is available only with `GLIMPSE_DEMO=1`; otherwise the workspace starts inactive.
+**Current state:** Milestones 1–4 are implemented in this worktree. A Fastify service owns shared state, persists it in SQLite, authenticates the single owner, pairs read-only display sessions, and accepts scoped bearer agent commands. The Display presents backend-owned activity and safe structured widgets; Admin manages all widget slots, while agents and the opt-in demo own their own widgets. An opt-in Hermes Python plugin is implemented against official v0.22.6 documentation/source, but no Hermes installation is available here and live CLI/Gateway validation is pending on the user's machine. Simulated agent activity is available only with `GLIMPSE_DEMO=1`; otherwise the workspace starts inactive.
 
 ## What is present
 
@@ -13,6 +13,7 @@
 - **Display style:** owner-configurable Quiet status or Ambient activity; preference persists across restart and updates paired displays.
 - **Protocol v1:** bounded Zod schemas for state, snapshots, commands, structured errors, and WebSocket messages.
 - **Structured widgets:** stable owned slots for text, status, metric, progress, and declarative visual content; strict schemas, idempotent lifecycle commands, fixed placement regions, expiry and count/size bounds. No executable widget HTML or JavaScript.
+- **Hermes plugin (live validation pending):** opt-in Python plugin for documented CLI/Gateway hooks and structured widget operations; lifecycle metadata only, with unsupported presence/idle states documented. See [Hermes integration](docs/integrations/hermes.md).
 - **Backend:** loopback-only Fastify API, SQLite state/revision/activity persistence, authenticated HTTP mutations, and read-only snapshot/update WebSockets.
 - **Security:** bootstrap-secret first-run setup, scrypt password hashing, hashed opaque session and agent credentials, SameSite/HttpOnly cookies, CSRF and exact loopback Origin checks, rate/body/frame bounds, session expiry/revocation, and redacted credential headers.
 - **Frontend transport:** no browser `localStorage` or `BroadcastChannel` shared state; client validates snapshots and updates and reconnects with bounded backoff.
@@ -27,8 +28,9 @@
 | `server/widgets.ts`, `src/display/widgets.ts` | Shared widget lifecycle/ownership service and safe Display renderers. |
 | `server/server.ts` | API, authentication, authorization, persistence, WebSockets, static production routes. |
 | `server/adapters/demo.ts` | Opt-in simulated state and transitions. |
+| `integrations/hermes/` | Optional Hermes plugin, lifecycle normalization, loopback API client, widget tool, and fixture tests. |
 | `tests/` | UI, protocol, auth, persistence/restart, fan-out, and WebSocket boundary tests. |
-| `docs/architecture/`, `docs/protocol/`, `docs/widgets/`, `docs/security/` | Architecture, API contract, widget guide, and deployment/security boundaries. |
+| `docs/architecture/`, `docs/protocol/`, `docs/widgets/`, `docs/security/`, `docs/integrations/` | Architecture, API contract, widget guide, deployment/security boundaries, and agent integration guides. |
 
 ## Local workflow
 
@@ -37,6 +39,7 @@
 - `GLIMPSE_BOOTSTRAP_SECRET='...' npm run dev` — Vite + backend on loopback; Vite proxies API/WS.
 - Add `GLIMPSE_DEMO=1` to explicitly enable seeded fake activity.
 - `npm test`, `npm run build`, `npm audit` — tests, frontend/server type checks and production bundle, dependency audit.
+- `python3 -B -m unittest discover -s integrations/hermes/tests -v` — Hermes plugin fixtures; does not require Hermes installed.
 - `npm start` — production static UI + API, without Vite.
 - `GLIMPSE_DB`, `PORT` — optional DB path and port. `HOST` is restricted to loopback; TLS/LAN access is not implemented.
 
@@ -44,7 +47,8 @@ The backend is a single local process. Plain loopback HTTP is not encrypted. Do 
 
 ## Not implemented
 
-- Hermes/other real agent adapter; no external agent is connected automatically.
+- Live Hermes plugin discovery/hook validation; no Hermes agent is connected automatically until the user installs, configures, and enables the plugin.
+- Hermes online/offline and reliable idle/presence detection; stream response indication is conditional on Hermes streaming hooks.
 - TLS, LAN/remote access, multi-user administration, or multi-instance operation.
 - Executable custom widget code and arbitrary display coordinates.
 - Full schema migration history beyond the migrations needed for agent identities and widget state.

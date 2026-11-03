@@ -115,18 +115,20 @@ Do not move the whole app into the suggested monorepo layout unless implementati
 
 ## Milestone 5 — Verified Hermes integration (critical)
 
+**Status (2026-11-03): Implementation ready; live Hermes validation pending.** No Hermes installation was available in the development environment. The Python plugin, capability matrix, setup guide, and fixture tests target the official v0.22.6 documentation/source; this is not a claim about the user's installed version. See [`docs/integrations/hermes.md`](../integrations/hermes.md). Do not mark Milestone 5 complete until the user-run CLI/Gateway checklist is recorded.
+
 **Outcome:** first real agent integration uses documented, verified Hermes mechanisms only.
 
 ### Tasks
-1. Inspect the installed Hermes version and official documentation/source for supported hooks, events, APIs, SDKs, or tool/plugin extension points. Record exact version and sources in `docs/integrations/hermes.md`.
+1. Check for an installed Hermes version; when unavailable, state that clearly and use only official pinned v0.22.6 documentation/source as the implementation baseline. Record exact sources and keep live-version validation pending in `docs/integrations/hermes.md`.
 2. Create a capability matrix for requested events: online/offline/idle, task start/update/complete/fail, tool start/complete, waiting, responding. Mark each supported, unsupported, or unverified with evidence.
 3. Choose one stable supported event mechanism; reject undocumented APIs and avoid terminal scraping unless no reliable supported option exists and limitations are explicit.
-4. Implement `server/src/adapters/hermes/` as a boundary that normalizes only verified events into protocol v1; include reconnect, cleanup, health, and error handling.
+4. Implement `integrations/hermes/` as a boundary that normalizes verified lifecycle metadata into protocol v1; use stateless delivery (later events reconnect naturally), interruption cleanup, bounded failures, and no inferred online/offline health signal.
 5. Add a documented, permission-scoped Hermes capability/tool to submit structured widget commands through the same validator/ownership path.
-6. Add fixture-based adapter tests for each supported event, malformed/unknown events, disconnect and reconnect. Keep live Hermes validation separate from automated tests.
-7. Test against an actual Hermes installation and record the exact environment, verified behavior, unavailable events, and setup/troubleshooting.
+6. Add fixture-based adapter tests for each supported event, malformed/unknown events, disconnect and later-event recovery. Keep live Hermes validation separate from automated tests.
+7. **Pending user validation:** test against the user's actual Hermes installation and record the exact version/environment, verified behavior, unavailable events, and setup/troubleshooting.
 
-**Acceptance:** real supported activity is visible; no fake events are presented as live; widget commands are permission limited; unsupported Hermes capabilities are documented, not simulated.
+**Acceptance:** **Pending live validation.** The implementation and fixture checks are ready; final acceptance requires real supported activity to be observed on the user's installed Hermes version, no fake events presented as live, widget commands confirmed permission-limited, and unsupported capabilities documented rather than simulated.
 
 ## Milestone 6 — Display polish, admin completeness, and accessibility (medium)
 
