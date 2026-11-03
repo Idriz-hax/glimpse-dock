@@ -43,17 +43,20 @@ export class WyomingVoiceClient {
       send({ type: 'detect', data: { names: [model.name] } });
       send({ type: 'audio-start', data: { rate: 16000, width: 2, channels: 1 } });
       let detected: string | undefined;
+      const iterator = audio[Symbol.asyncIterator]();
+      let stopFeeding!: () => void;
+      const stopped = new Promise<void>(resolve => { stopFeeding = resolve; });
       const feeding = (async () => {
-        try { for await (const frame of audio) { if (signal.aborted || detected) break; if (frame.length > MAX_PAYLOAD) throw new Error('Audio frame too large'); send({ type: 'audio-chunk' }, frame); } }
+        try { while (!signal.aborted && !detected) { const result = await Promise.race([iterator.next(), stopped.then(() => null)]); if (!result || result.done || signal.aborted || detected) break; if (result.value.length > MAX_PAYLOAD) throw new Error('Audio frame too large'); send({ type: 'audio-chunk' }, result.value); } }
         catch (error) { if (!detected && !signal.aborted) throw error; }
       })();
       try {
         while (true) {
           const e = await next();
-          if (e.type === 'detection') { detected = typeof e.data?.name === 'string' ? e.data.name : model.name; onDetection(detected, Number(e.data?.timestamp ?? Date.now())); send({ type: 'audio-stop' }); void feeding; return detected; }
+          if (e.type === 'detection') { detected = typeof e.data?.name === 'string' ? e.data.name : model.name; stopFeeding(); onDetection(detected, Number(e.data?.timestamp ?? Date.now())); send({ type: 'audio-stop' }); void iterator.return?.(); void feeding; return detected; }
           if (e.type === 'not-detected') { send({ type: 'audio-stop' }); await feeding; return; }
         }
-      } finally { void feeding; }
+       } finally { if (detected) { stopFeeding(); void iterator.return?.(); } void feeding; }
     });
   }
   async transcribe(audio: Buffer, signal: AbortSignal): Promise<string> {
@@ -109,8 +112,8 @@ export class WyomingVoiceClient {
         }
         if (buffer.length < header.remaining) return;
         const dl = header.data_length ?? 0; const dataBytes = buffer.subarray(0, dl); const payload = buffer.subarray(dl, header.remaining); buffer = buffer.subarray(header.remaining);
-        let data = {};
-        if (dl) { try { data = JSON.parse(dataBytes.toString()); } catch { socket.destroy(new Error('Invalid Wyoming data')); return; } }
+        let data = header.data && typeof header.data === 'object' ? header.data : {};
+        if (dl) { try { const extra = JSON.parse(dataBytes.toString()); if (extra && typeof extra === 'object' && !Array.isArray(extra)) data = { ...data, ...extra }; } catch { socket.destroy(new Error('Invalid Wyoming data')); return; } }
         const e: WyomingEvent = { type: header.type, ...(data && typeof data === 'object' ? { data: data as Record<string, unknown> } : {}), ...(header.payload_length ? { payload: payload as Buffer } : {}) };
         header = null; if (waiter) { const w = waiter; waiter = undefined; w(e); } else queue.push(e);
       }
