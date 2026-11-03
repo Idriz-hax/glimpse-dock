@@ -51,10 +51,10 @@ export class HermesApiClient {
       const type = eventName || (typeof obj.type === 'string' ? obj.type : '');
       const text = (key: string) => typeof obj[key] === 'string' ? obj[key] as string : '';
       if (type === 'message.delta' && text('delta')) onEvent({ type, delta: text('delta').slice(0, 16_384) });
-      else if (['subagent.start', 'subagent.complete', 'tool.start', 'tool.complete', 'tool.failed'].includes(type)) {
-        onEvent({ type: type as HermesRunEvent['type'], name: text('name').slice(0, 256) });
-      } else if (['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted'].includes(type)) {
-        onEvent({ type: type as HermesRunEvent['type'], status: text('status').slice(0, 128) || type.slice(4) });
+      else if (type === 'subagent.start' || type === 'subagent.complete' || type === 'tool.start' || type === 'tool.complete' || type === 'tool.failed') {
+        onEvent({ type, name: text('name').slice(0, 256) });
+      } else if (type === 'run.completed' || type === 'run.failed' || type === 'run.cancelled' || type === 'run.interrupted') {
+        onEvent({ type, status: text('status').slice(0, 128) || type.slice(4) });
       }
       eventName = ''; data = '';
     };
