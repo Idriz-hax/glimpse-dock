@@ -119,6 +119,42 @@ describe('WyomingVoiceClient', () => {
     await audioStarted;
     await expect(pending).rejects.toThrow(/aborted/);
   });
+  it('waits for socket drain before requesting the next wake audio frame', async () => {
+    const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { wake: [{ name: 'hey_hermes' }] } }); });
+    const originalWrite = net.Socket.prototype.write;
+    let chunkBlocked = false;
+    vi.spyOn(net.Socket.prototype, 'write').mockImplementation(function (this: net.Socket, chunk: any, ...args: any[]) {
+      const result = originalWrite.call(this, chunk, ...args as [any]);
+      if (!chunkBlocked && Buffer.isBuffer(chunk) && chunk.includes(Buffer.from('audio-chunk'))) {
+        chunkBlocked = true;
+        setTimeout(() => this.emit('drain'), 40);
+        return false;
+      }
+      return result;
+    });
+    let requested = 0;
+    const audio = { async *[Symbol.asyncIterator]() { requested++; yield Buffer.from([1]); requested++; yield Buffer.from([2]); await new Promise<void>(() => {}); } };
+    const controller = new AbortController();
+    const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).detectWake(audio, controller.signal, () => {});
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(requested).toBe(1);
+    controller.abort();
+    await expect(pending).rejects.toThrow(/aborted/);
+    vi.restoreAllMocks();
+  });
+  it('aborts model discovery without opening the wake detection connection', async () => {
+    let connects = 0; let described!: () => void;
+    const started = new Promise<void>(resolve => { described = resolve; });
+    const server = net.createServer(socket => { connects++; socket.on('data', () => described()); });
+    server.listen(0, '127.0.0.1'); servers.push(server);
+    const uri = await new Promise<string>(resolve => server.once('listening', () => resolve(`tcp://127.0.0.1:${(server.address() as net.AddressInfo).port}`)));
+    const controller = new AbortController();
+    const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).detectWake({ async *[Symbol.asyncIterator]() {} }, controller.signal, () => {});
+    await started; controller.abort();
+    await expect(pending).rejects.toThrow(/aborted/);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(connects).toBe(1);
+  });
   it('times out an unresponsive Wyoming service', async () => {
     const originalTimeout = net.Socket.prototype.setTimeout;
     vi.spyOn(net.Socket.prototype, 'setTimeout').mockImplementation(function (this: net.Socket, _timeout: number, callback?: () => void) {
