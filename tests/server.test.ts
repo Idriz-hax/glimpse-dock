@@ -184,7 +184,7 @@ describe('backend', () => {
     expect((await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'agent-owned-create', type: 'widget.create', payload: { widget } } })).statusCode).toBe(200);
     expect((await send('owner-update', 'widget.update', { id: 'agent-owned', title: 'Owner updated' })).statusCode).toBe(200);
     expect((await send('owner-hide', 'widget.set-visibility', { id: 'agent-owned', visible: false })).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: expect.any(String), title: 'Owner updated', visible: false });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: `agent:${agent.json().id}`, title: 'Owner updated', visible: false });
     expect((await send('owner-remove', 'widget.remove', { id: 'agent-owned' })).statusCode).toBe(200);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets).toEqual([]);
   });
