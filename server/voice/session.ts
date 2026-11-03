@@ -179,6 +179,7 @@ export class VoiceSession {
 
   private async runHermes(text: string, turn: number, generation: number): Promise<void> {
     if (this.remoteActive || !this.isCurrent(generation, turn)) return;
+    this.settledNotified = false;
     this.remoteActive = true; // Fail closed from before startRun until a terminal event is observed.
     this.remoteStopRequested = false;
     const startController = this.turnController ?? new AbortController();

@@ -187,6 +187,19 @@ describe('VoiceSession', () => {
     expect(h.session.hasActiveRun).toBe(false);
   });
 
+  it('notifies lease settlement for every run on a reused socket', async () => {
+    vi.useFakeTimers();
+    const settled = vi.fn();
+    const h = harness('hello', settled);
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(1), true); await h.finishCapture(); await h.eventsStarted.promise;
+    h.emit({ type: 'run.completed', status: 'completed', output: '' }); h.eventsDone.resolve(); await flush();
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(2), true); await h.finishCapture(); await flush();
+    expect(h.hermes.startRun).toHaveBeenCalledTimes(2);
+    h.session.close();
+    h.emit({ type: 'run.cancelled', status: 'cancelled' });
+    expect(settled).toHaveBeenCalledTimes(2);
+  });
+
   it('ignores a duplicate terminal callback from an older run', async () => {
     vi.useFakeTimers();
     const h = harness();
