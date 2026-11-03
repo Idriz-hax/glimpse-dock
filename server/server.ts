@@ -45,7 +45,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    })();
    const now = options.now ?? Date.now;
   const read = (key: string) => db.prepare('SELECT value FROM kv WHERE key=?').get(key) as {value:string}|undefined;
-   let state = read('state') ? ProtocolStateSchema.parse(JSON.parse(read('state')!.value)) : options.demo ? createDemoState() : empty;
+    let state = read('state') ? ProtocolStateSchema.parse(JSON.parse(read('state')!.value)) : options.demo ? createDemoState(now()) : empty;
    let revision = Number(read('revision')?.value ?? 0);
    let source = read('source')?.value ?? (options.demo ? 'demo' : 'owner');
   const sockets = new Map<string, Set<any>>();

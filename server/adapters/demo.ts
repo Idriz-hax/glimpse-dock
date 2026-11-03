@@ -1,11 +1,17 @@
 import { initialState, type State, type Level } from '../../src/demo-state.ts';
 import type { CommandRequest } from '../../src/shared/protocol.ts';
-import { updateWidget } from '../widgets.ts';
+import { createWidget, removeWidget, updateWidget } from '../widgets.ts';
 
 const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-export function createDemoState(): State {
+export function createDemoState(now = Date.now()): State {
   const state = initialState();
+  state.widgets = [];
+  for (const widget of initialState().widgets) {
+    const { owner: _owner, visible: _visible, createdAt: _createdAt, updatedAt: _updatedAt, ...input } = widget;
+    const result = createWidget(state.widgets, input, 'demo', now);
+    if (result.ok) state.widgets = result.widgets;
+  }
   state.logs = [
     { id: 3, time: stamp(), title: 'Connection established', detail: 'Local simulation is active', level: 'success' },
     { id: 2, time: stamp(), title: 'Agent started a task', detail: state.task, level: 'info' },
@@ -26,7 +32,7 @@ export function transitionDemo(state: State, command: CommandRequest, now = Date
     next.activity = 'thinking';
   };
 
-  if (command.type === 'demo.reset') return createDemoState();
+  if (command.type === 'demo.reset') return createDemoState(now);
    if (command.type === 'demo.set-enabled') {
     next.running = command.payload.enabled;
     if (next.running && (next.activity === 'completed' || next.activity === 'error')) startFreshTask();
@@ -47,6 +53,20 @@ export function transitionDemo(state: State, command: CommandRequest, now = Date
     () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 3) } }, 'demo', now); if (result.ok) next.widgets = result.widgets; } next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
     () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 1) } }, 'demo', now); if (result.ok) next.widgets = result.widgets; } next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
     () => { startFreshTask(); next.progress = 28; addLog('New task started', next.task); },
+    () => {
+      const widget = { version: 1, id: 'demo-status', title: 'Demo status', content: { kind: 'metric', label: 'Demo status', value: 'Active' }, placement: 'secondary', expiresAt: null };
+      const existing = next.widgets.find(item => item.id === 'demo-status');
+      const result = existing
+        ? updateWidget(next.widgets, existing.id, { content: { ...existing.content, value: existing.content.kind === 'metric' && existing.content.value === 'Active' ? 'Ready' : 'Active' } }, 'demo', now)
+        : createWidget(next.widgets, widget, 'demo', now);
+      if (result.ok) next.widgets = result.widgets;
+      addLog(existing ? 'Demo widget updated' : 'Demo widget created', 'Demo status sample changed');
+    },
+    () => {
+      const result = removeWidget(next.widgets, 'demo-status', 'demo');
+      if (result.ok) next.widgets = result.widgets;
+      addLog('Demo widget removed', 'Demo status sample removed');
+    },
   ];
   actions[Math.floor(Math.random() * actions.length)]();
   return next;
