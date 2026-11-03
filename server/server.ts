@@ -4,11 +4,12 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
 import Database from 'better-sqlite3';
-import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { canTransitionActivity, CommandRequestSchema, ProtocolStateSchema, type CommandRequest } from '../src/shared/protocol.ts';
 import { createDemoState, transitionDemo } from './adapters/demo.ts';
+import { createWidget, updateWidget, setWidgetVisibility, removeWidget, removeExpiredWidgets, type WidgetPrincipal } from './widgets.ts';
 
 const scrypt = promisify(scryptCb);
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -32,9 +33,13 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   db.exec(`CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, role TEXT NOT NULL, csrf TEXT NOT NULL, expires INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS agents (digest TEXT PRIMARY KEY, revoked INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS agents (digest TEXT PRIMARY KEY, revoked INTEGER NOT NULL DEFAULT 0, agent_id TEXT);
+    CREATE TABLE IF NOT EXISTS widget_commands (principal TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(principal,request_id));
     CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, detail TEXT NOT NULL);`);
-  db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)').run();
+   db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)').run();
+   if (!db.prepare('SELECT 1 FROM pragma_table_info(\'agents\') WHERE name=\'agent_id\'').get()) db.exec('ALTER TABLE agents ADD COLUMN agent_id TEXT');
+   for (const row of db.prepare('SELECT digest FROM agents WHERE agent_id IS NULL').all() as any[]) db.prepare('UPDATE agents SET agent_id=? WHERE digest=?').run(randomUUID(), row.digest);
+   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agents_agent_id ON agents(agent_id); INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)');
   const read = (key: string) => db.prepare('SELECT value FROM kv WHERE key=?').get(key) as {value:string}|undefined;
    let state = read('state') ? ProtocolStateSchema.parse(JSON.parse(read('state')!.value)) : options.demo ? createDemoState() : empty;
    let revision = Number(read('revision')?.value ?? 0);
@@ -102,7 +107,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   app.get('/api/sessions',async(req:any,reply)=>{const owner=auth(req); if(owner?.role!=='owner') return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); return {sessions:db.prepare("SELECT digest,role,expires FROM sessions WHERE role IN ('owner','display')").all().map((s:any)=>({id:s.digest,role:s.role,expires:s.expires}))};});
   app.delete('/api/sessions/:id',async(req:any,reply)=>{const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const id=String(req.params.id); db.prepare("DELETE FROM sessions WHERE digest=? AND role IN ('owner','display')").run(id); closeSockets(id); return {ok:true};});
   app.post('/api/logout',async(req:any,reply)=>{const session=auth(req);if(!session||req.body?.csrf!==session.csrf)return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});db.prepare('DELETE FROM sessions WHERE digest=?').run(session.digest);closeSockets(session.digest);reply.clearCookie('session',{path:'/'});return {ok:true};});
-   app.post('/api/agents', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const secret=token(); db.prepare('INSERT INTO agents(digest,revoked) VALUES (?,0)').run(hash(secret)); return { secret }; });
+    app.post('/api/agents', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const secret=token(), id=randomUUID(); db.prepare('INSERT INTO agents(digest,revoked,agent_id) VALUES (?,0,?)').run(hash(secret),id); return { id, secret }; });
   app.delete('/api/agents/:digest', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); db.prepare('UPDATE agents SET revoked=1 WHERE digest=?').run(req.params.digest); return {ok:true}; });
    const commit = (next: typeof state, detail: string, nextSource: string) => {
      const rev=revision+1;
@@ -112,13 +117,31 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      for(const group of sockets.values()) for(const ws of group) if(ws.readyState===1) ws.send(message);
      return true;
    };
-   const applyCommand = (command: CommandRequest, principal: 'owner' | 'agent' | 'demo') => {
-     let next = state;
-     const isDemoCommand = command.type.startsWith('demo.') || command.type === 'widget.create' && options.demo === true;
+     const principalSource = (principal: WidgetPrincipal): string => principal === 'owner' ? 'owner' : principal === 'demo' ? 'demo' : 'agent';
+     const applyCommand = (command: CommandRequest, principal: WidgetPrincipal) => {
+      let next = state;
+      const isWidgetCommand = command.type === 'widget.create' || command.type === 'widget.update' || command.type === 'widget.set-visibility' || command.type === 'widget.remove';
+      let fingerprint = '';
+      if (isWidgetCommand) {
+        fingerprint = hash(JSON.stringify(command));
+        const prior = db.prepare('SELECT fingerprint,revision FROM widget_commands WHERE principal=? AND request_id=?').get(principal, command.requestId) as any;
+        if (prior) return prior.fingerprint === fingerprint ? { revision: prior.revision } : { error: 'CONFLICT' };
+        let result;
+        switch (command.type) {
+          case 'widget.create': result = createWidget(state.widgets, command.payload.widget, principal, Date.now()); break;
+          case 'widget.update': result = updateWidget(state.widgets, command.payload.id, { title: command.payload.title, content: command.payload.content, placement: command.payload.placement, expiresAt: command.payload.expiresAt }, principal, Date.now()); break;
+          case 'widget.set-visibility': result = setWidgetVisibility(state.widgets, command.payload.id, command.payload.visible, principal); break;
+          case 'widget.remove': result = removeWidget(state.widgets, command.payload.id, principal); break;
+        }
+        if (!result.ok) return { error: result.code };
+        next = { ...state, widgets: result.widgets };
+      }
+      const isDemoCommand = command.type.startsWith('demo.');
      if (isDemoCommand) {
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
        next = transitionDemo(state, command);
-      } else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null };
+      } else if (isWidgetCommand) { /* handled through widget lifecycle */ }
+      else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null };
       else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
        else if (command.type === 'state.set-activity') {
          if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
@@ -137,9 +160,23 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
         if (principal !== 'owner') return null;
         next = { ...state, displayStyle: command.payload.style };
       }
-      return commit(next, command.type, principal === 'demo' || isDemoCommand ? 'demo' : principal);
+      if (isWidgetCommand) {
+        const rev = revision + 1;
+        try { db.transaction(() => { tx(next,rev,command.type,principalSource(principal)); db.prepare('INSERT INTO widget_commands VALUES (?,?,?,?,?)').run(principal,command.requestId,fingerprint,rev,Date.now()); db.prepare('DELETE FROM widget_commands WHERE rowid NOT IN (SELECT rowid FROM widget_commands ORDER BY created_at DESC LIMIT 1000)').run(); })(); }
+        catch { return false; }
+        state=next; revision=rev; source=principalSource(principal);
+        const message=JSON.stringify({v:1,type:'state',revision,source,state}); for(const group of sockets.values()) for(const ws of group) if(ws.readyState===1) ws.send(message);
+        return { revision };
+      }
+      return commit(next, command.type, principal === 'demo' || isDemoCommand ? 'demo' : principalSource(principal));
    };
-   const demoTimer = options.demo ? setInterval(() => {
+    const cleanupExpired = () => {
+      const cleaned = removeExpiredWidgets(state.widgets, Date.now());
+      if (cleaned.ok && cleaned.widgets.length !== state.widgets.length) commit({ ...state, widgets: cleaned.widgets }, 'widget.expiry-cleanup', source);
+    };
+    cleanupExpired();
+    const expiryTimer = setInterval(cleanupExpired, 60_000);
+    const demoTimer = options.demo ? setInterval(() => {
      if (!state.running) return;
      const command = CommandRequestSchema.parse({ v: 1, requestId: token(), type: 'demo.simulate', payload: {} });
      applyCommand(command, 'demo');
@@ -148,7 +185,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    app.get('/api/state', async (req: any, reply) => { if(!auth(req)) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}}); return {v:1,type:'snapshot',revision,source,state}; });
   app.post('/api/command', async (req: any, reply) => {
     const session=auth(req); const agentHeader=req.headers.authorization;
-    const agent=agentHeader?.startsWith('Bearer ') ? db.prepare('SELECT revoked FROM agents WHERE digest=?').get(hash(agentHeader.slice(7))) as any : undefined;
+    const agent=agentHeader?.startsWith('Bearer ') ? db.prepare('SELECT revoked,agent_id FROM agents WHERE digest=?').get(hash(agentHeader.slice(7))) as any : undefined;
     if(session&&agentHeader) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
     if(!session&&!agent) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}});
     if(session?.role==='display') return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
@@ -157,14 +194,15 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
     const commandInput = req.body?.command ?? Object.fromEntries(Object.entries(req.body ?? {}).filter(([key]) => key !== 'csrf'));
     const parsed=CommandRequestSchema.safeParse(commandInput); if(!parsed.success) return reply.code(400).send({v:1,error:{code:'INVALID_COMMAND',message:'Invalid command',requestId:req.body?.requestId??'request'}});
      const c=parsed.data;
-     const principal = agent ? 'agent' : 'owner';
-     const result = applyCommand(c, principal);
-     if(result === null) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:c.requestId}});
-     if(!result) return reply.code(500).send({v:1,error:{code:'PERSISTENCE_FAILED',message:'Persistence failed',requestId:c.requestId}});
-     return {ok:true,revision};
+       const principal: WidgetPrincipal = agent ? `agent:${agent.agent_id}` : 'owner';
+      const result = applyCommand(c, principal);
+      if(result === null) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:c.requestId}});
+        if(typeof result === 'object' && 'error' in result) { const status: Record<string, number> = { INVALID_INPUT:400, FORBIDDEN:403, NOT_FOUND:404, CONFLICT:409 }; const code = String(result.error); return reply.code(status[code] ?? 403).send({v:1,error:{code,message:code,requestId:c.requestId}}); }
+      if(!result) return reply.code(500).send({v:1,error:{code:'PERSISTENCE_FAILED',message:'Persistence failed',requestId:c.requestId}});
+      return {ok:true,revision: typeof result === 'object' ? result.revision : revision};
    });
     app.get('/api/stream',{websocket:true},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} if(!sameLoopbackOrigin(req.headers.origin, req.headers.host)){socket.close(1008,'Unauthorized');return;} const id=session.digest; if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(JSON.stringify({v:1,type:'snapshot',revision,source,state}));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
-    app.addHook('onClose', async () => { if(demoTimer) clearInterval(demoTimer); db.close(); });
+     app.addHook('onClose', async () => { clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
    if (process.env.NODE_ENV === 'production') {
      for (const path of ['/', '/admin', '/display']) app.get(path, async (_req, reply) => reply.sendFile('index.html', resolve(process.cwd(), 'dist'), { maxAge: 0, immutable: false }));
    }

@@ -141,4 +141,16 @@ describe('backend', () => {
     await send('task.complete', {});
     expect((await send('task.complete', {})).statusCode).toBe(200);
   });
+  it('issues stable agent IDs and makes widget mutation retries idempotent', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const created = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
+    expect(created.json()).toMatchObject({ id: expect.any(String), secret: expect.any(String) });
+    const request = { v: 1, requestId: 'widget-once', type: 'widget.create', payload: { widget: { version: 1, id: 'agent-one', title: 'One', content: { kind: 'text', text: 'hello' }, placement: 'primary', expiresAt: null } } };
+    const send = () => app!.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${created.json().secret}` }, payload: request });
+    expect((await send()).statusCode).toBe(200);
+    expect((await send()).json()).toMatchObject({ revision: 1 });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().revision).toBe(1);
+  });
 });

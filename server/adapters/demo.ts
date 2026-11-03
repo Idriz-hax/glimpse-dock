@@ -1,5 +1,6 @@
 import { initialState, type State, type Level } from '../../src/demo-state.ts';
 import type { CommandRequest } from '../../src/shared/protocol.ts';
+import { updateWidget } from '../widgets.ts';
 
 const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
@@ -26,12 +27,6 @@ export function transitionDemo(state: State, command: CommandRequest): State {
   };
 
   if (command.type === 'demo.reset') return createDemoState();
-  if (command.type === 'widget.create') {
-    if (next.widgets.length >= 32) return next;
-    next.widgets.push({ ...command.payload.widget, owner: 'demo', visible: true, createdAt: Date.now(), updatedAt: Date.now() });
-    addLog('Widget created', 'Added a new custom metric', 'success');
-    return next;
-  }
    if (command.type === 'demo.set-enabled') {
     next.running = command.payload.enabled;
     if (next.running && (next.activity === 'completed' || next.activity === 'error')) startFreshTask();
@@ -49,8 +44,8 @@ export function transitionDemo(state: State, command: CommandRequest): State {
 
   const actions = [
     () => { next.progress = Math.min(100, (next.progress ?? 0) + 11); next.activity = next.progress === 100 ? 'completed' : 'thinking'; addLog(next.activity === 'completed' ? 'Task completed' : 'Task progress updated', `Current task advanced to ${next.progress}%`, 'success'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget?.content.kind === 'metric') widget.content = { ...widget.content, value: String(Number(widget.content.value) + 3) }; next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget?.content.kind === 'metric') widget.content = { ...widget.content, value: String(Number(widget.content.value) + 1) }; next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 3) } }, 'demo', Date.now()); if (result.ok) next.widgets = result.widgets; } next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 1) } }, 'demo', Date.now()); if (result.ok) next.widgets = result.widgets; } next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
     () => { startFreshTask(); next.progress = 28; addLog('New task started', next.task); },
   ];
   actions[Math.floor(Math.random() * actions.length)]();
