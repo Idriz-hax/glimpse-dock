@@ -307,20 +307,26 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       if(!result) return reply.code(500).send({v:1,error:{code:'PERSISTENCE_FAILED',message:'Persistence failed',requestId:c.requestId}});
       return {ok:true,revision: typeof result === 'object' ? result.revision : revision};
    });
-     app.get('/api/voice/session', { websocket: true }, (socket, req: any) => {
-       const owner = ownerVoiceSession(req);
-       let settings: any;
-       try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
-       const sessionId = read(hermesSessionKey)?.value;
-       if (!owner || !sameLoopbackOrigin(req.headers.origin, req.headers.host) || !settings?.enabled || !sessionId || !hermesVoice || !wyomingVoice) { socket.close(1008, 'Unavailable'); return; }
-       if (voiceLease) { socket.close(1008, 'Voice session active'); return; }
-       voiceLease = true;
+      const authorizeVoiceUpgrade = async (req: any, reply: any) => {
+        const owner = ownerVoiceSession(req);
+        if (!owner || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+        let settings: any;
+        try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
+        const sessionId = read(hermesSessionKey)?.value;
+        if (!settings?.enabled || !sessionId || !hermesVoice || !wyomingVoice) return voiceUnavailable(reply);
+        if (voiceLease) return reply.code(409).send(errorBody('CONFLICT', 'Voice session active'));
+        req.voiceUpgrade = { owner, settings, sessionId };
+      };
+      app.get('/api/voice/session', { websocket: true, preValidation: authorizeVoiceUpgrade }, (socket, req: any) => {
+        const { owner, settings, sessionId } = req.voiceUpgrade;
+        if (voiceLease) { socket.close(1008, 'Voice session active'); return; }
+        voiceLease = true;
        const id = owner.digest;
        if (!sockets.has(id)) sockets.set(id, new Set());
        sockets.get(id)!.add(socket);
        activeVoiceSocket = socket;
        const releaseLease = () => { if (activeVoiceSocket === socket) { activeVoiceSocket = undefined; voiceLease = false; } };
-       const voice = new VoiceSession({ socket, hermes: hermesVoice, wyoming: wyomingVoice, sessionId, settings, onRemoteSettled: () => { if (socket.readyState === 3) releaseLease(); } });
+        const voice = new VoiceSession({ socket, hermes: hermesVoice!, wyoming: wyomingVoice!, sessionId, settings, onRemoteSettled: () => { if (socket.readyState === 3) releaseLease(); } });
        const timer = setTimeout(() => socket.close(1008, 'Session expired'), Math.max(0, owner.expires - now()));
        socket.on('message', (data: unknown, isBinary: boolean) => voice.message(data, isBinary));
        socket.on('close', () => {

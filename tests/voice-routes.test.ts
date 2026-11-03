@@ -152,8 +152,11 @@ describe('owner voice websocket route', () => {
     ws.on('message', data => messages.push(data as Buffer));
     await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
     const second=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie,origin:base}});
-    const secondClose=new Promise<number>(resolve=>second.once('close',code=>resolve(code)));
-    expect(await secondClose).toBe(1008);
+    const secondStatus = await new Promise<number>(resolve => {
+      second.once('unexpected-response', (_req, response) => { resolve(response.statusCode); response.resume(); });
+      second.once('open', () => { second.close(); resolve(101); });
+    });
+    expect(secondStatus).toBe(409);
     ws.send(JSON.stringify({ type:'manual-start' })); ws.send(Buffer.from([3, 0]));
     const until = async (predicate: () => boolean) => { const end=Date.now()+2000; while(!predicate() && Date.now()<end) await new Promise(r=>setTimeout(r,10)); expect(predicate()).toBe(true); };
     await until(() => messages.some(m => Buffer.isBuffer(m) && m.equals(Buffer.from([1,0,2,0]))));
@@ -252,16 +255,16 @@ describe('owner voice websocket route', () => {
       ws.once('unexpected-response', (_req, res) => { resolve(res.statusCode ?? 0); res.resume(); });
       ws.once('close', code => resolve(code));
     });
-    expect(await attempt({ origin: base })).not.toBe(101);
+    expect(await attempt({ origin: base })).toBe(403);
     const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret:'bootstrap', password:'long-enough-password' }) });
     const cookie = setup.headers.get('set-cookie')!.split(';')[0]!;
     const csrf = (await setup.json() as any).csrf;
-    expect(await attempt({ cookie, origin: 'http://evil.example' })).not.toBe(101);
+    expect(await attempt({ cookie, origin: 'http://evil.example' })).toBe(403);
     const pairResponse=await fetch(`${base}/api/display/pair`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf})});
     const pair=await pairResponse.json() as any;
     const redeemed=await fetch(`${base}/api/display/redeem`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({code:pair.code})});
     const displayCookie=redeemed.headers.get('set-cookie')!.split(';')[0]!;
-    expect(await attempt({cookie:displayCookie,origin:base})).not.toBe(101);
+    expect(await attempt({cookie:displayCookie,origin:base})).toBe(403);
     expect(clients.hermes.createSession).not.toHaveBeenCalled();
     expect(clients.wyoming.listWakeModels).not.toHaveBeenCalled();
   });
