@@ -62,12 +62,22 @@ export const CommandRequestSchema = z.discriminatedUnion('type', [
 const normalizeLegacyWidget = (widget: Record<string, unknown>) => ({ version: 1, id: widget.id, owner: 'owner', title: widget.label, content: { kind: 'metric', label: widget.label, value: widget.value, caption: widget.sub }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null });
 export const ProtocolStateSchema = z.preprocess(value => {
   if (typeof value !== 'object' || value === null || !Array.isArray((value as Record<string, unknown>).widgets)) return value;
-  return { ...value, widgets: (value as { widgets: unknown[] }).widgets.map(widget => {
-    if (typeof widget !== 'object' || widget === null || !('label' in widget) || !('value' in widget) || !('sub' in widget) || !('tone' in widget)) return widget;
+  let visibleCount = 0;
+  const widgets = (value as { widgets: unknown[] }).widgets.map(widget => {
+    if (typeof widget !== 'object' || widget === null) return widget;
     const legacy = widget as Record<string, unknown>;
-    if (!['purple', 'cyan', 'green', 'amber'].includes(String(legacy.tone))) return widget;
-    return normalizeLegacyWidget(legacy);
-  }) };
+    if (!('label' in legacy) && !('value' in legacy) && !('sub' in legacy) && !('tone' in legacy)) {
+      if (typeof legacy.visible === 'boolean' && legacy.visible) visibleCount++;
+      return widget;
+    }
+    const exactKeys = Object.keys(legacy).sort().join(',') === 'id,label,sub,tone,value';
+    if (!exactKeys || typeof legacy.id !== 'string' || typeof legacy.label !== 'string' || typeof legacy.value !== 'string' || typeof legacy.sub !== 'string' || !['purple', 'cyan', 'green', 'amber'].includes(String(legacy.tone))) return widget;
+    const normalized = normalizeLegacyWidget(legacy);
+    const result = { ...normalized, visible: visibleCount < 12 };
+    if (result.visible) visibleCount++;
+    return result;
+  });
+  return { ...value, widgets };
 }, z.object({
   agent: z.string().max(256),
   task: z.string().max(2048),

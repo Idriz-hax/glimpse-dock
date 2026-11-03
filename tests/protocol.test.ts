@@ -67,6 +67,28 @@ describe('protocol v1', () => {
     expect(ProtocolStateSchema.parse(legacy).widgets[0]).toEqual({ version: 1, id: 'old', owner: 'owner', title: 'Old label', content: { kind: 'metric', label: 'Old label', value: '7', caption: 'Old info' }, placement: 'secondary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null });
   });
 
+  it('preserves legacy records while hiding overflow beyond 12 visible widgets', () => {
+    const widgets = Array.from({ length: 15 }, (_, index) => ({ id: `legacy-${index}`, label: `Label ${index}`, value: String(index), sub: `Info ${index}`, tone: 'cyan' }));
+    const normalized = ProtocolStateSchema.parse({ ...initialState(), widgets }).widgets;
+    expect(normalized).toHaveLength(15);
+    expect(normalized.map(widget => widget.id)).toEqual(widgets.map(widget => widget.id));
+    expect(normalized.slice(0, 12).every(widget => widget.visible)).toBe(true);
+    expect(normalized.slice(12).every(widget => !widget.visible)).toBe(true);
+    expect(normalized[14]).toMatchObject({ title: 'Label 14', content: { label: 'Label 14', value: '14', caption: 'Info 14' } });
+  });
+
+  it('rejects malformed legacy widget objects instead of discarding unknown fields', () => {
+    const good = { id: 'legacy', label: 'Label', value: '1', sub: 'Info', tone: 'cyan' };
+    for (const widget of [
+      { ...good, extra: true },
+      { ...good, value: 1 },
+      { ...good, tone: 'neon' },
+      { id: 'legacy', label: 'Label', value: '1', sub: 'Info' },
+    ]) {
+      expect(ProtocolStateSchema.safeParse({ ...initialState(), widgets: [widget] }).success).toBe(false);
+    }
+  });
+
   it('validates every structured content kind and enforces content bounds', () => {
     const base = { version: 1, id: 'valid', owner: 'owner', title: 'Title', placement: 'primary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null };
     for (const content of [{ kind: 'text', text: 'Hi' }, { kind: 'status', label: 'Ready', tone: 'success' }, { kind: 'metric', label: 'Count', value: '3' }, { kind: 'progress', label: 'Work', value: null }, { kind: 'visual', primitives: [{ kind: 'rect', x: 0, y: 0, width: 100, height: 100, color: 'cyan' }] }]) {

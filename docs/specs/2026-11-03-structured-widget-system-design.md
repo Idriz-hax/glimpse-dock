@@ -20,7 +20,7 @@ Version 1 structured kinds:
 
 All schemas are strict and versioned. Initial limits are 32 total widgets, 12 visible widgets, at most 64 visual primitives per visual slot, and 4 KiB of text content per slot. The existing 16 KiB HTTP/WebSocket payload limits remain; commands exceeding them fail validation. Expiry is optional (`null` means no expiry); expired slots are removed by backend cleanup. Notification placement is persistent until hidden, removed, or expired—not a short-lived toast.
 
-Existing persisted metric widgets are normalized to version 1 metric slots with safe defaults and owner ownership, preserving their IDs, labels, values, and supporting text. Unknown or malformed records are rejected rather than rendered. Existing non-widget state and revisions remain intact.
+Existing persisted metric widgets with the exact legacy `{id,label,value,sub,tone}` shape and valid field types/tone are normalized to version 1 metric slots with safe defaults and owner ownership, preserving their IDs, labels, values, and supporting text. If legacy records exceed the 12-visible limit, preserve all records in order and normalize overflow records as hidden. Extra-key or malformed records are rejected rather than silently stripped or rendered. Existing non-widget state and revisions remain intact.
 
 ## Ownership, commands, and persistence
 

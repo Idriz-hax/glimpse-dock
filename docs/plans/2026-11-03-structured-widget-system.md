@@ -37,7 +37,7 @@
 
 **Files:** modify `src/shared/protocol.ts`, `src/demo-state.ts`, `tests/protocol.test.ts`, and `tests/demo-state.test.ts`.
 
-- [ ] **Step 1: Add failing protocol tests.** Cover strict version `1`, all five kinds, bad kinds/tones/placements, progress `null` versus bounded numeric, >64 visual primitives, text length >4096, and legacy `{id,label,value,sub,tone}` normalization preserving ID and visible text. Legacy records normalize as owner-owned metric slots, secondary placement, visible, no expiry, timestamps `0`.
+- [ ] **Step 1: Add failing protocol tests.** Cover strict version `1`, all five kinds, bad kinds/tones/placements, progress `null` versus bounded numeric, >64 visual primitives, text length >4096, and legacy `{id,label,value,sub,tone}` normalization preserving ID and visible text. Require exactly the legacy keys and valid field types/tone; reject extras and malformed records. Legacy records normalize as owner-owned metric slots, secondary placement, visible, no expiry, timestamps `0`; preserve arrays larger than 12 by keeping the first 12 normalized legacy slots visible and hiding overflow.
 - [ ] **Step 2: Run `npm test -- --run tests/protocol.test.ts tests/demo-state.test.ts`.** Confirm the new cases fail because widget fields/commands are not yet defined.
 - [ ] **Step 3: Define version 1 schemas** in `src/shared/protocol.ts`. Use a strict content union:
 
