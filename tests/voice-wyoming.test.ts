@@ -27,9 +27,10 @@ function fake(handler: (event: any, send: (event: unknown, payload?: Buffer) => 
       }
     });
     function send(event: unknown, payload?: Buffer) {
+      const { data, ...rest } = event as any;
+      const dataBytes = data === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(data));
       const bytes = payload ?? Buffer.alloc(0);
-      socket.write(Buffer.from(JSON.stringify({ ...event as object, ...(bytes.length ? { payload_length: bytes.length } : {}) }) + '\n'));
-      if (bytes.length) socket.write(bytes);
+      socket.write(Buffer.concat([Buffer.from(JSON.stringify({ ...rest, ...(data === undefined ? {} : { data_length: dataBytes.length }), ...(bytes.length ? { payload_length: bytes.length } : {}), version: '1.0' }) + '\n'), dataBytes, bytes]));
     }
   });
   server.listen(0, '127.0.0.1'); servers.push(server);
@@ -39,9 +40,13 @@ afterEach(async () => { await Promise.all(servers.splice(0).map(s => new Promise
 
 describe('WyomingVoiceClient', () => {
   it('discovers wake models and Piper voices from describe/info', async () => {
-    const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { wake_word: [{ name: 'hey_hermes', phrase: 'Hey Hermes' }] } }); });
+    const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { wake: [{ name: 'openwakeword', models: [{ name: 'hey_hermes', phrase: 'Hey Hermes' }] }] } }); });
     const client = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri });
     expect(await client.listWakeModels()).toEqual([{ name: 'hey_hermes', phrase: 'Hey Hermes' }]);
+  });
+  it('discovers voices nested under Piper tts services', async () => {
+    const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { tts: [{ voices: [{ name: 'en_US-lessac-medium' }] }] } }); });
+    expect(await new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).listVoices()).toEqual(['en_US-lessac-medium']);
   });
   it('transcribes audio and synthesizes using returned format', async () => {
     const uri = await fake((e, send) => {
@@ -50,7 +55,7 @@ describe('WyomingVoiceClient', () => {
     });
     const c = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri });
     expect(await c.transcribe(Buffer.from([0, 0]), new AbortController().signal)).toBe('hello');
-    expect(await c.synthesize('hello', 'voice', new AbortController().signal)).toEqual(Buffer.from([1, 2]));
+    expect(await c.synthesize('hello', 'voice', new AbortController().signal)).toEqual({ pcm: Buffer.from([1, 2]), rate: 22050, width: 2, channels: 1 });
   });
   it('rejects non-loopback endpoints', () => { expect(() => new WyomingVoiceClient({ wake: 'tcp://example.com:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' })).toThrow(); });
 });
