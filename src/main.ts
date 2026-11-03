@@ -9,6 +9,7 @@ import { renderDisplayGate, renderOwnerGate } from './auth/view';
 import { type State } from './demo-state';
 import { commandForInput, validSnapshot, parseStateMessage } from './frontend-client';
 import { StateMessageSchema } from './shared/protocol';
+import { mountVoice } from './display/voice';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const displayMode = resolveRoute(location.pathname) === 'display';
@@ -16,13 +17,14 @@ let page: AdminPage = 'overview', state: State | null = null, role: string | nul
 let authMode: 'setup' | 'login' = 'login', gateError = '', gateStatus = '', gatePending = false, pairingCode = '', pairingStatus = '', pairingError = '', pairingPending = false;
 let socket: WebSocket | undefined, retry = 0, reconnectTimer: number | undefined, toastTimer: number | undefined;
 let streamConnected = false;
+let stopVoice: (() => void) | undefined;
 const id = () => crypto.randomUUID();
 
 function render() {
   document.body.classList.toggle('display-mode', displayMode);
-  if (!role || (!displayMode && role !== 'owner')) { app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
+  if (!role || (!displayMode && role !== 'owner')) { stopVoice?.(); stopVoice = undefined; app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
   if (!state) { app.textContent = 'Loading workspace…'; return; }
-  if (displayMode) { app.innerHTML = renderDisplay(state, demoMode, streamConnected); mountDisplayWidgets(app, state.widgets); return; }
+  if (displayMode) { if (role === 'owner' && app.querySelector('.display-owner')) { mountDisplayWidgets(app, state.widgets); return; } stopVoice?.(); stopVoice = undefined; app.innerHTML = renderDisplay(state, demoMode, streamConnected, role === 'owner' ? 'owner' : 'display'); mountDisplayWidgets(app, state.widgets); if (role === 'owner') stopVoice = mountVoice(app); return; }
   app.innerHTML = renderAdmin(state, page, { demoMode, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
   bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), widgetAction: (type, payload) => { void send(type, payload); }, widgetSample: kind => sampleWidget(kind), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
 }
@@ -51,7 +53,7 @@ async function request(path: string, body?: unknown) {
   return result;
 }
 function message(error: unknown) { return error instanceof Error ? error.message : 'Network request failed'; }
-function unauthenticated() { socket?.close(); role = null; state = null; csrf = ''; gateError = 'Your session expired. Please sign in again.'; render(); }
+function unauthenticated() { stopVoice?.(); stopVoice = undefined; socket?.close(); role = null; state = null; csrf = ''; gateError = 'Your session expired. Please sign in again.'; render(); }
 async function loadState() { const snapshot = validSnapshot(await request('/api/state')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
 function connect() {
   clearTimeout(reconnectTimer); socket?.close();

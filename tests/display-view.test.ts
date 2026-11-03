@@ -106,4 +106,11 @@ describe('display render boundary', () => {
     expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).toContain('>Keep this task text</p>');
     expect(renderDisplay(initialState(), true, false)).toContain('Connection lost');
   });
+
+  it('renders owner voice stage while paired display remains voice-free', () => {
+    const owner = renderDisplay(initialState(), false, true, 'owner');
+    expect(owner).toContain('data-voice-enable'); expect(owner).toContain('data-transcript'); expect(owner).toContain('data-subagents');
+    const paired = renderDisplay(initialState(), false, true, 'display');
+    expect(paired).not.toContain('voice'); expect(paired).not.toContain('data-transcript');
+  });
 });
