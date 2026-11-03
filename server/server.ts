@@ -12,6 +12,7 @@ import { createDemoState, transitionDemo } from './adapters/demo.ts';
 import { createWidget, updateWidget, setWidgetVisibility, removeWidget, removeExpiredWidgets, type WidgetPrincipal } from './widgets.ts';
 import { HermesApiClient } from './voice/hermes-api.ts';
 import { WyomingVoiceClient } from './voice/wyoming.ts';
+import { VoiceSession } from './voice/session.ts';
 
 const scrypt = promisify(scryptCb);
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -27,8 +28,8 @@ const sameLoopbackOrigin = (origin: string | undefined, host: string | undefined
   } catch { return false; }
 };
 const empty = ProtocolStateSchema.parse({ agent: '', task: '', progress: 0, running: false, widgets: [], logs: [] });
-type VoiceHermesClient = Pick<HermesApiClient, 'createSession'>;
-type VoiceWyomingClient = Pick<WyomingVoiceClient, 'listWakeModels' | 'listVoices'>;
+type VoiceHermesClient = Pick<HermesApiClient, 'createSession' | 'startRun' | 'stopRun' | 'readRunEvents'>;
+type VoiceWyomingClient = Pick<WyomingVoiceClient, 'listWakeModels' | 'listVoices' | 'detectWake' | 'transcribe' | 'synthesize'>;
 type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; demo?: boolean; now?: () => number; voiceClients?: { hermes?: VoiceHermesClient; wyoming?: VoiceWyomingClient } };
 
 function configuredHermesUrl(value: string | undefined): string | undefined {
@@ -113,8 +114,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      await previous;
      try { return await operation(); } finally { release(); }
    };
-   // Private WS-phase hook: reset remains available until a voice socket/run can be active.
-   let hasActiveVoiceSession = () => false;
+   let activeVoiceSocket: any;
+   let voiceLease = false;
+   const hasActiveVoiceSession = () => voiceLease;
    const voicePreferenceKey = 'voice.settings';
    const hermesSessionKey = 'voice.hermesSession';
    const ownerVoiceSession = (req: any) => {
@@ -134,8 +136,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        : [];
      return { wakeOk: wake.status === 'fulfilled', voicesOk: voices.status === 'fulfilled', wakeModels, voices: voiceNames };
    };
-   const createHermesSession = async (replace: boolean): Promise<boolean> => withVoiceSessionLock(async () => {
-     if (!hermesVoice) return false;
+    const createHermesSession = async (replace: boolean): Promise<boolean> => withVoiceSessionLock(async () => {
+      if (replace && hasActiveVoiceSession()) return false;
+      if (!hermesVoice) return false;
      if (!replace) {
        const existing = read(hermesSessionKey)?.value;
        if (existing && existing.length <= 1024) return true;
@@ -286,7 +289,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    }, 12_000) : undefined;
    app.get('/api/session', async (req: any) => { const session=auth(req); return session ? {role:session.role,csrf:session.csrf,demoEnabled:options.demo===true,setupRequired:!read('password')} : {role:null,demoEnabled:options.demo===true,setupRequired:!read('password')}; });
    app.get('/api/state', async (req: any, reply) => { if(!auth(req)) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}}); return {v:1,type:'snapshot',revision,source,state}; });
-  app.post('/api/command', async (req: any, reply) => {
+    app.post('/api/command', async (req: any, reply) => {
     const session=auth(req); const agentHeader=req.headers.authorization;
     const agent=agentHeader?.startsWith('Bearer ') ? db.prepare('SELECT revoked,agent_id FROM agents WHERE digest=?').get(hash(agentHeader.slice(7))) as any : undefined;
     if(session&&agentHeader) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
@@ -304,7 +307,29 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       if(!result) return reply.code(500).send({v:1,error:{code:'PERSISTENCE_FAILED',message:'Persistence failed',requestId:c.requestId}});
       return {ok:true,revision: typeof result === 'object' ? result.revision : revision};
    });
-    app.get('/api/stream',{websocket:true},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} if(!sameLoopbackOrigin(req.headers.origin, req.headers.host)){socket.close(1008,'Unauthorized');return;} const id=session.digest; if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(JSON.stringify({v:1,type:'snapshot',revision,source,state}));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
+     app.get('/api/voice/session', { websocket: true }, (socket, req: any) => {
+       const owner = ownerVoiceSession(req);
+       let settings: any;
+       try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
+       const sessionId = read(hermesSessionKey)?.value;
+       if (!owner || !sameLoopbackOrigin(req.headers.origin, req.headers.host) || !settings?.enabled || !sessionId || !hermesVoice || !wyomingVoice) { socket.close(1008, 'Unavailable'); return; }
+       if (voiceLease) { socket.close(1008, 'Voice session active'); return; }
+       voiceLease = true;
+       const id = owner.digest;
+       if (!sockets.has(id)) sockets.set(id, new Set());
+       sockets.get(id)!.add(socket);
+       activeVoiceSocket = socket;
+       const releaseLease = () => { if (activeVoiceSocket === socket) { activeVoiceSocket = undefined; voiceLease = false; } };
+       const voice = new VoiceSession({ socket, hermes: hermesVoice, wyoming: wyomingVoice, sessionId, settings, onRemoteSettled: () => { if (socket.readyState === 3) releaseLease(); } });
+       const timer = setTimeout(() => socket.close(1008, 'Session expired'), Math.max(0, owner.expires - now()));
+       socket.on('message', (data: unknown, isBinary: boolean) => voice.message(data, isBinary));
+       socket.on('close', () => {
+         clearTimeout(timer); voice.close();
+         const group = sockets.get(id); group?.delete(socket); if (!group?.size) sockets.delete(id);
+         if (!voice.hasActiveRun) releaseLease();
+       });
+     });
+     app.get('/api/stream',{websocket:true},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} if(!sameLoopbackOrigin(req.headers.origin, req.headers.host)){socket.close(1008,'Unauthorized');return;} const id=session.digest; if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(JSON.stringify({v:1,type:'snapshot',revision,source,state}));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
      app.addHook('onClose', async () => { clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
    if (process.env.NODE_ENV === 'production') {
      for (const path of ['/', '/admin', '/display']) app.get(path, async (_req, reply) => reply.sendFile('index.html', resolve(process.cwd(), 'dist'), { maxAge: 0, immutable: false }));

@@ -1,14 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from '../server/server.ts';
+import WebSocket from 'ws';
 
 const ORIGIN = { origin: 'http://localhost:80' };
 function fakes() {
   let nextId = 0;
+  let nextRun = 0;
   return {
-    hermes: { createSession: vi.fn(async () => `private-session-${++nextId}`) },
+    hermes: {
+      createSession: vi.fn(async () => `private-session-${++nextId}`),
+      startRun: vi.fn(async () => ({ runId: `private-run-${++nextRun}` })),
+      stopRun: vi.fn(async () => ({ status: 'stopping' })),
+      readRunEvents: vi.fn(async (_id: string, _signal: AbortSignal, emit: (event: any) => void) => {
+        emit({ type: 'message.delta', text: 'assistant delta' });
+        emit({ type: 'run.completed', status: 'completed', output: 'spoken reply' });
+      }),
+    },
     wyoming: {
       listWakeModels: vi.fn(async () => [{ name: 'hey_hermes', phrase: 'Hey Hermes' }, { name: 'computer', phrase: 'Computer' }]),
       listVoices: vi.fn(async () => ['en_US-lessac-medium', 'en_US-amy-medium']),
+      detectWake: vi.fn(async () => undefined),
+      transcribe: vi.fn(async () => 'private transcript'),
+      synthesize: vi.fn(async () => ({ pcm: Buffer.from([1, 0, 2, 0]), rate: 16_000, width: 2, channels: 1 })),
     },
   };
 }
@@ -109,5 +122,147 @@ describe('owner voice REST routes', () => {
     const response = await app.inject({ method: 'POST', url: '/api/voice/session', headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf } });
     expect(response.statusCode).toBe(503);
     expect(response.body).not.toContain('8642');
+  });
+});
+
+describe('owner voice websocket route', () => {
+  let app: Awaited<ReturnType<typeof createServer>> | undefined;
+  afterEach(async () => { await app?.close(); app = undefined; });
+  it('delivers private owner turn events and one raw PCM frame, then resumes wake only after matching playback ack', async () => {
+    const clients = fakes();
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients as any });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as import('node:net').AddressInfo;
+    const base = `http://127.0.0.1:${address.port}`;
+    const setup = await fetch(`${base}/api/setup`, { method:'POST', headers:{ origin:base, 'content-type':'application/json' }, body:JSON.stringify({ secret:'bootstrap', password:'long-enough-password' }) });
+    const cookie = setup.headers.get('set-cookie')!.split(';')[0]!;
+    const csrf = (await setup.json() as any).csrf;
+    const post = (url: string, payload: object) => fetch(`${base}${url}`, { method:'POST', headers:{ cookie, origin:base, 'content-type':'application/json' }, body:JSON.stringify({ csrf, ...payload }) });
+    await post('/api/voice/settings', { enabled:true, wakeModel:'hey_hermes', voice:'en_US-lessac-medium' });
+    await post('/api/voice/session', {});
+    const pairResponse=await fetch(`${base}/api/display/pair`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf})});
+    const pair=await pairResponse.json() as any;
+    const redeemed=await fetch(`${base}/api/display/redeem`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({code:pair.code})});
+    const displayCookie=redeemed.headers.get('set-cookie')!.split(';')[0]!;
+    const display=new WebSocket(`${base.replace('http:','ws:')}/api/stream`,{headers:{cookie:displayCookie,origin:base}});
+    const displayFrames:string[]=[]; display.on('message',data=>displayFrames.push(data.toString()));
+    await new Promise<void>((resolve,reject)=>{display.once('open',resolve);display.once('error',reject);});
+    const ws = new WebSocket(`${base.replace('http:', 'ws:')}/api/voice/session`, { headers:{ cookie, origin:base } });
+    const messages: Array<string|Buffer> = [];
+    ws.on('message', data => messages.push(data as Buffer));
+    await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    const second=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie,origin:base}});
+    const secondClose=new Promise<number>(resolve=>second.once('close',code=>resolve(code)));
+    expect(await secondClose).toBe(1008);
+    ws.send(JSON.stringify({ type:'manual-start' })); ws.send(Buffer.from([3, 0]));
+    const until = async (predicate: () => boolean) => { const end=Date.now()+2000; while(!predicate() && Date.now()<end) await new Promise(r=>setTimeout(r,10)); expect(predicate()).toBe(true); };
+    await until(() => messages.some(m => Buffer.isBuffer(m) && m.equals(Buffer.from([1,0,2,0]))));
+    const texts = messages.filter((m): m is Buffer => Buffer.isBuffer(m)).filter(m => m.length !== 4).map(m => m.toString());
+    const events = texts.map(x => JSON.parse(x));
+    expect(events.some(x => x.type==='transcript' && x.text==='private transcript')).toBe(true);
+    expect(events.some(x => x.type==='assistant.delta' && x.text==='assistant delta')).toBe(true);
+    expect(events.some(x => x.type==='tts-start')).toBe(true);
+    expect(events.some(x => x.type==='tts-end')).toBe(true);
+    expect(displayFrames).toHaveLength(1);
+    expect(displayFrames.join()).not.toContain('private transcript');
+    expect(displayFrames.join()).not.toContain('assistant delta');
+    const speaking = events.findLast(x => x.type==='state' && x.phase==='speaking');
+    ws.send(JSON.stringify({ type:'playback-ended', turn:speaking.turn }));
+    await until(() => clients.wyoming.detectWake.mock.calls.length > 0);
+    ws.close();
+    display.close();
+  });
+  it('holds reset lease after socket close until remote run terminal event', async () => {
+    const clients = fakes();
+    let emit!: (event: any) => void;
+    let finish!: () => void;
+    let started!: () => void;
+    const runStarted = new Promise<void>(resolve => { started=resolve; });
+    const remoteDone = new Promise<void>(resolve => { finish=resolve; });
+    clients.hermes.readRunEvents.mockImplementation(async (_id, _signal, callback) => { emit=callback; started(); await remoteDone; });
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients as any });
+    await app.listen({ host:'127.0.0.1', port:0 });
+    const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',password:'long-enough-password'})});
+    const cookie=setup.headers.get('set-cookie')!.split(';')[0]!, csrf=(await setup.json() as any).csrf;
+    const post=(url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
+    await post('/api/voice/settings',{enabled:true,wakeModel:'hey_hermes',voice:'en_US-lessac-medium'}); await post('/api/voice/session',{});
+    const ws=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie,origin:base}});
+    await new Promise<void>((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    ws.send(JSON.stringify({type:'manual-start'})); ws.send(Buffer.from([1,0])); await runStarted;
+    const closed=new Promise<void>(resolve=>ws.once('close',()=>resolve())); ws.close(); await closed;
+    const reset=()=>post('/api/voice/session/reset',{});
+    expect((await reset()).status).toBe(409);
+    emit({type:'run.cancelled',status:'cancelled'}); finish();
+    const deadline=Date.now()+1000; let response:Response;
+    do { response=await reset(); if(response.status===200) break; await new Promise(r=>setTimeout(r,10)); } while(Date.now()<deadline);
+    expect(response!.status).toBe(200);
+  });
+  it('closes the owner voice socket on logout and enforces the 16KiB inbound limit', async () => {
+    const clients=fakes();
+    app=await createServer({database:':memory:',bootstrapSecret:'bootstrap',voiceClients:clients as any});
+    await app.listen({host:'127.0.0.1',port:0});
+    const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',password:'long-enough-password'})});
+    const cookie=setup.headers.get('set-cookie')!.split(';')[0]!, csrf=(await setup.json() as any).csrf;
+    const login=await fetch(`${base}/api/login`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({password:'long-enough-password'})});
+    const secondCookie=login.headers.get('set-cookie')!.split(';')[0]!, secondCsrf=(await login.json() as any).csrf;
+    const post=(url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
+    await post('/api/voice/settings',{enabled:true,wakeModel:'hey_hermes',voice:'en_US-lessac-medium'}); await post('/api/voice/session',{});
+    const ws=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie,origin:base}});
+    await new Promise<void>((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    const tooLarge=new Promise<number>(resolve=>ws.once('close',code=>resolve(code)));
+    ws.send('x'.repeat(16_385));
+    expect(await tooLarge).toBe(1009);
+    const again=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie,origin:base}});
+    await new Promise<void>((resolve,reject)=>{again.once('open',resolve);again.once('error',reject);});
+    const closed=new Promise<number>(resolve=>again.once('close',code=>resolve(code)));
+    await post('/api/logout',{});
+    expect(await closed).toBe(1008);
+    const revoked=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie:secondCookie,origin:base}});
+    await new Promise<void>((resolve,reject)=>{revoked.once('open',resolve);revoked.once('error',reject);});
+    const revokeClose=new Promise<number>(resolve=>revoked.once('close',code=>resolve(code)));
+    const sessions=await fetch(`${base}/api/sessions`,{headers:{cookie:secondCookie}});
+    const own=(await sessions.json() as any).sessions.find((s:any)=>s.role==='owner');
+    await fetch(`${base}/api/sessions/${own.id}`,{method:'DELETE',headers:{cookie:secondCookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf:secondCsrf})});
+    expect(await revokeClose).toBe(1008);
+    expect(clients.wyoming.transcribe).not.toHaveBeenCalled();
+  });
+  it('closes an owner socket when the expiry deadline is already due', async () => {
+    const clients=fakes();
+    app=await createServer({database:':memory:',bootstrapSecret:'bootstrap',voiceClients:clients as any,now:()=>Date.now()+86_400_001});
+    await app.listen({host:'127.0.0.1',port:0});
+    const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',password:'long-enough-password'})});
+    const cookie=setup.headers.get('set-cookie')!.split(';')[0]!, csrf=(await setup.json() as any).csrf;
+    const post=(url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
+    await post('/api/voice/settings',{enabled:true,wakeModel:'hey_hermes',voice:'en_US-lessac-medium'}); await post('/api/voice/session',{});
+    const ws=new WebSocket(`${base.replace('http:','ws:')}/api/voice/session`,{headers:{cookie,origin:base}});
+    await new Promise<void>((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    expect(await new Promise<number>(resolve=>ws.once('close',code=>resolve(code)))).toBe(1008);
+  });
+  it('rejects missing owner and non-loopback origins before voice clients are called', async () => {
+    const clients = fakes();
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients as any });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as import('node:net').AddressInfo;
+    const base = `http://127.0.0.1:${address.port}`;
+    const attempt = (headers: Record<string,string>) => new Promise<number>(resolve => {
+      const ws = new WebSocket(`${base.replace('http:', 'ws:')}/api/voice/session`, { headers });
+      ws.once('unexpected-response', (_req, res) => { resolve(res.statusCode ?? 0); res.resume(); });
+      ws.once('close', code => resolve(code));
+    });
+    expect(await attempt({ origin: base })).not.toBe(101);
+    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret:'bootstrap', password:'long-enough-password' }) });
+    const cookie = setup.headers.get('set-cookie')!.split(';')[0]!;
+    const csrf = (await setup.json() as any).csrf;
+    expect(await attempt({ cookie, origin: 'http://evil.example' })).not.toBe(101);
+    const pairResponse=await fetch(`${base}/api/display/pair`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf})});
+    const pair=await pairResponse.json() as any;
+    const redeemed=await fetch(`${base}/api/display/redeem`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({code:pair.code})});
+    const displayCookie=redeemed.headers.get('set-cookie')!.split(';')[0]!;
+    expect(await attempt({cookie:displayCookie,origin:base})).not.toBe(101);
+    expect(clients.hermes.createSession).not.toHaveBeenCalled();
+    expect(clients.wyoming.listWakeModels).not.toHaveBeenCalled();
   });
 });

@@ -8,7 +8,7 @@ const deferred = <T = void,>() => {
 };
 const frame = (n: number) => Buffer.from([n, 0]);
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-function harness(transcript = 'hello') {
+function harness(transcript = 'hello', onRemoteSettled?: () => void) {
   const sent: Array<string | Buffer> = [];
   const socket = { send: vi.fn((data: string | Buffer) => sent.push(data)), close: vi.fn() };
   let detection!: (name: string) => void;
@@ -41,7 +41,7 @@ function harness(transcript = 'hello') {
     transcribe,
     synthesize: vi.fn(async () => ({ pcm: Buffer.from([4, 0]), rate: 16000, width: 2, channels: 1 })),
   };
-  const session = new VoiceSession({ socket, hermes, wyoming, sessionId: 'private-session', settings: { wakeModel: 'hey', voice: 'voice' } });
+  const session = new VoiceSession({ socket, hermes, wyoming, sessionId: 'private-session', settings: { wakeModel: 'hey', voice: 'voice' }, onRemoteSettled });
   const message = (value: string | Buffer, binary = false) => session.message(value, binary);
   const finishCapture = async () => { await vi.advanceTimersByTimeAsync(15_000); await flush(); };
   return { session, socket, sent, hermes, wyoming, consumed, transcribeSignals, remoteSignals, wakeStarted, wakeDone, triggerWake: (name = 'hey') => detection(name), emit: (event: any) => terminal(event), eventsDone, eventsStarted, message, finishCapture, get detectorCount() { return detectorCount; } };
@@ -172,6 +172,18 @@ describe('VoiceSession', () => {
     expect(h.remoteSignals[0]?.aborted).toBe(false);
     expect(h.hermes.stopRun).toHaveBeenCalledWith('private-run-id');
     h.emit({ type: 'run.cancelled', status: 'cancelled' });
+    expect(h.session.hasActiveRun).toBe(false);
+  });
+
+  it('releases the route lease only when a closed socket remote run reaches terminal', async () => {
+    vi.useFakeTimers();
+    const settled = vi.fn();
+    const h = harness('hello', settled);
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(5), true); await h.finishCapture(); await h.eventsStarted.promise;
+    h.session.close();
+    expect(settled).not.toHaveBeenCalled();
+    h.emit({ type: 'run.cancelled', status: 'cancelled' });
+    expect(settled).toHaveBeenCalledTimes(1);
     expect(h.session.hasActiveRun).toBe(false);
   });
 

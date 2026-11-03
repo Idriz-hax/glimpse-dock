@@ -21,6 +21,7 @@ export type VoiceSessionOptions = {
   wyoming: Wyoming;
   sessionId: string;
   settings: { enabled?: boolean; wakeModel: string; voice: string };
+  onRemoteSettled?: () => void;
 };
 
 const MAX_FRAME = 16 * 1024;
@@ -48,6 +49,7 @@ export class VoiceSession {
   private remoteRunId?: string;
   private remoteStopRequested = false;
   private closed = false;
+  private settledNotified = false;
   constructor(private readonly options: VoiceSessionOptions) {}
 
   get hasActiveRun(): boolean { return this.remoteActive; }
@@ -66,6 +68,9 @@ export class VoiceSession {
       }
       catch { this.fail('AUDIO_OVERFLOW'); }
       return;
+    }
+    if (Buffer.byteLength(typeof data === 'string' ? data : Buffer.isBuffer(data) ? data : '') > 1024) {
+      this.send({ type: 'error', code: 'INVALID_MESSAGE', turn: this.turn ?? null }); return;
     }
     let control: unknown;
     try { control = JSON.parse(typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : ''); }
@@ -97,6 +102,7 @@ export class VoiceSession {
     this.wakeQueue?.discard(); this.wakeQueue = undefined;
     this.wakeController?.abort(); this.turnController?.abort();
     this.stopRemote();
+    if (!this.remoteActive) this.notifySettled();
     this.phase = 'closed';
   }
 
@@ -191,6 +197,7 @@ export class VoiceSession {
         terminal = true; if (event.type === 'run.completed') completion = event;
         this.remoteActive = false; this.remoteRunId = undefined;
         this.remoteController = undefined;
+        this.notifySettled();
       }
       if (!this.isCurrent(generation, turn) || this.remoteStopRequested || this.closed) return;
       if (event.type === 'message.delta') this.send({ type: 'assistant.delta', text: event.text.slice(0, MAX_TEXT), turn });
@@ -242,6 +249,12 @@ export class VoiceSession {
     this.remoteStopRequested = true;
     const id = this.remoteRunId;
     if (id) void this.options.hermes.stopRun(id).catch(() => {});
+  }
+
+  private notifySettled(): void {
+    if (this.settledNotified) return;
+    this.settledNotified = true;
+    this.options.onRemoteSettled?.();
   }
 
   private fail(code: string): void {
