@@ -179,14 +179,16 @@ export class VoiceSession {
     catch { if (this.isCurrent(generation, turn)) this.fail('HERMES_UNAVAILABLE'); return; }
     this.remoteRunId = runId;
     if (startController.signal.aborted || this.remoteStopRequested || this.closed) void this.stopRemote();
-    this.remoteController = new AbortController();
-    const remoteSignal = this.remoteController.signal;
+    const remoteController = new AbortController();
+    this.remoteController = remoteController;
+    const remoteSignal = remoteController.signal;
     let terminal = false, completion: Extract<HermesRunEvent, { type: 'run.completed' }> | undefined;
     const deliver = (event: HermesRunEvent) => {
+      if (this.remoteController !== remoteController || terminal) return;
       if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled' || event.type === 'run.interrupted') {
         terminal = true; if (event.type === 'run.completed') completion = event;
         this.remoteActive = false; this.remoteRunId = undefined;
-        if (this.remoteController === this.remoteController) this.remoteController = undefined;
+        this.remoteController = undefined;
       }
       if (!this.isCurrent(generation, turn) || this.remoteStopRequested || this.closed) return;
       if (event.type === 'message.delta') this.send({ type: 'assistant.delta', text: event.text.slice(0, MAX_TEXT), turn });

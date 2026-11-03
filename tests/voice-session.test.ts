@@ -162,6 +162,26 @@ describe('VoiceSession', () => {
     h.session.close();
   });
 
+  it('ignores a duplicate terminal callback from an older run', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const callbacks: Array<(event: any) => void> = [];
+    const started = [deferred(), deferred()];
+    const pending = [deferred(), deferred()];
+    h.hermes.readRunEvents.mockImplementation(async (_id, _signal, onEvent) => {
+      const index = callbacks.length; callbacks.push(onEvent); started[index]!.resolve(); await pending[index]!.promise;
+    });
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(1), true); await h.finishCapture(); await started[0]!.promise;
+    callbacks[0]!({ type: 'run.completed', status: 'completed', output: '' });
+    h.message(JSON.stringify({ type: 'pause' })); h.message(JSON.stringify({ type: 'resume' })); await flush();
+    h.triggerWake(); h.message(frame(2), true); await h.finishCapture(); await started[1]!.promise;
+    callbacks[0]!({ type: 'run.cancelled', status: 'cancelled' });
+    h.message(JSON.stringify({ type: 'pause' })); h.message(JSON.stringify({ type: 'resume' }));
+    expect(h.detectorCount).toBe(1);
+    expect(h.hermes.startRun).toHaveBeenCalledTimes(2);
+    h.session.close();
+  });
+
   it('aborts local capture when paused and fails closed on ambiguous run admission', async () => {
     vi.useFakeTimers();
     const h = harness();
