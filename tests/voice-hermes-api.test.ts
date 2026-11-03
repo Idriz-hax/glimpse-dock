@@ -67,10 +67,16 @@ describe('HermesApiClient', () => {
   it('rejects promptly when aborted while waiting for the next stream chunk', async () => {
     let reading!: () => void;
     const isReading = new Promise<void>(resolve => { reading = resolve; });
-    const body = new ReadableStream<Uint8Array>({
-      pull() { reading(); },
+    const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          reading();
+          init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), { once: true });
+        },
+      });
+      return new Response(body);
     });
-    const client = new HermesApiClient('http://127.0.0.1:8642', 'key', vi.fn(async () => new Response(body)) as typeof fetch);
+    const client = new HermesApiClient('http://127.0.0.1:8642', 'key', mockFetch as typeof fetch);
     const controller = new AbortController();
     const pending = client.readRunEvents('run', controller.signal, () => {});
     await isReading;
