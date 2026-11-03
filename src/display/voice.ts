@@ -80,7 +80,7 @@ export function mountVoice(root: ParentNode, csrf = ''): () => void {
    void fetch('/api/voice/status', { credentials: 'same-origin' }).then(async response => { if (!response.ok) throw new Error('Voice status unavailable'); return response.json(); }).then(data => {
      if (disposed) return;
      const fill = (select: HTMLSelectElement | null, items: unknown[], fallback: string) => { if (!select) return; const values = items.filter((item): item is string => typeof item === 'string' && item.length > 0); select.replaceChildren(...values.map(value => { const option = document.createElement('option'); option.value = value; option.textContent = value; return option; })); if (values.includes(fallback)) select.value = fallback; else if (values.length) select.value = values[0]; };
-     fill(wakeSelect, data.wakeModels, 'hey_hermes'); fill(voiceSelect, data.voices, 'default'); ready = data.availability?.hermes === true && data.availability?.wyoming === true && !!wakeSelect?.options.length && !!voiceSelect?.options.length;
+     fill(wakeSelect, data.wakeModels, 'hey_hermes'); fill(voiceSelect, data.voices, 'default'); ready = data.availability?.hermes === true && data.availability?.wyoming === true && Array.isArray(data.wakeModels) && data.wakeModels.length > 0 && Array.isArray(data.voices) && data.voices.length > 0;
      if (readiness) readiness.textContent = ready ? 'Voice services ready.' : 'Voice unavailable. Check Hermes and installed local voice services.';
      enable.disabled = !ready;
    }).catch(() => { if (!disposed) { if (readiness) readiness.textContent = 'Could not load voice availability.'; enable.disabled = true; } });

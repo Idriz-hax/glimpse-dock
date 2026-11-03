@@ -15,9 +15,11 @@ describe('owner voice controls', () => {
     const els = Object.fromEntries(['[data-voice-status]', '[data-voice-error]', '[data-transcript]', '[data-subagents]', '[data-voice-enable]', '[data-voice-manual]', '[data-voice-pause]', '[data-voice-mute]', '[data-voice-stop]'].map(key => [key, new Element()]));
     const root = { querySelector: (selector: string) => els[selector as keyof typeof els] };
     const getUserMedia = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'));
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ availability: { hermes: true, wyoming: true }, wakeModels: ['hey_hermes'], voices: ['default'] }) })));
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } }); vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
     const cleanup = mountVoice(root as never);
     expect(getUserMedia).not.toHaveBeenCalled();
+    await Promise.resolve(); await Promise.resolve();
     await els['[data-voice-enable]'].click();
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
     expect(els['[data-voice-error]'].textContent).toContain('permission was denied');
@@ -47,11 +49,13 @@ describe('owner voice controls', () => {
       resume() { return Promise.resolve(); } close() { this.state = 'closed'; return Promise.resolve(); }
     }
     const track = { stop: vi.fn() }, getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [track] });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ availability: { hermes: true, wyoming: true }, wakeModels: ['hey_hermes'], voices: ['default'] }) })));
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } }); vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
     vi.stubGlobal('location', { protocol: 'http:', host: 'localhost' }); vi.stubGlobal('WebSocket', FakeSocket); vi.stubGlobal('AudioContext', FakeContext);
     vi.stubGlobal('AudioWorkletNode', class extends FakeWorklet { constructor() { super(); worklet = this; } }); vi.stubGlobal('document', { createElement: () => new Element() });
     const cleanup = mountVoice(root as never);
     expect(getUserMedia).not.toHaveBeenCalled();
+    await Promise.resolve(); await Promise.resolve();
     await els['[data-voice-enable]'].click(); socket.open();
     expect(socket.sent[0]).toBe(JSON.stringify({ type: 'resume' }));
     await els['[data-voice-manual]'].click(); await els['[data-voice-pause]'].click(); await els['[data-voice-pause]'].click(); await els['[data-voice-stop]'].click();
