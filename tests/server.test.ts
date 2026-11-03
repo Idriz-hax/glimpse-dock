@@ -89,6 +89,7 @@ describe('backend', () => {
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
+    await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'owner-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tasks', title: 'Tasks', content: { kind: 'metric', label: 'Tasks', value: '0' }, placement: 'primary', expiresAt: null } } } });
     const response = await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'style-agent', type: 'display.set-style', payload: { style: 'ambient' } } });
     expect(response.statusCode).toBe(403);
   });
@@ -172,5 +173,28 @@ describe('backend', () => {
     expect((await removeSend()).statusCode).toBe(200);
     expect((await removeSend()).json().revision).toBe(5);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().revision).toBe(5);
+  });
+  it('authorizes legacy metric updates through widget ownership', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
+    const ownerCreate = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'owner-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tasks', title: 'Tasks', content: { kind: 'metric', label: 'Tasks', value: '0' }, placement: 'primary', expiresAt: null } } } });
+    expect(ownerCreate.statusCode).toBe(200);
+    const ownerBefore = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    const send = (secret: string, requestId: string, id: string, value: number) => app!.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${secret}` }, payload: { v: 1, requestId, type: 'metric.set-value', payload: { id, value } } });
+    const denied = await send(agent.json().secret, 'legacy-cross-owner', 'tasks', 99);
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe('FORBIDDEN');
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(ownerBefore);
+    const own = await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'own-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tools', title: 'Metric', content: { kind: 'metric', label: 'Metric', value: '0' }, placement: 'primary', expiresAt: null } } } });
+    expect(own.statusCode).toBe(200);
+    expect((await send(agent.json().secret, 'legacy-own', 'tools', 7)).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets.find((widget: any) => widget.id === 'tools').content.value).toBe('7');
+    const text = await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'own-text-create', type: 'widget.create', payload: { widget: { version: 1, id: 'agent-text', title: 'Text', content: { kind: 'text', text: 'hello' }, placement: 'primary', expiresAt: null } } } });
+    expect(text.statusCode).toBe(200);
+    expect((await send(agent.json().secret, 'legacy-non-metric', 'agent-text', 8)).statusCode).toBe(400);
+    expect((await send(agent.json().secret, 'legacy-missing', 'absent', 8)).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'legacy-owner', type: 'metric.set-value', payload: { id: 'tasks', value: 44 } } })).statusCode).toBe(200);
   });
 });

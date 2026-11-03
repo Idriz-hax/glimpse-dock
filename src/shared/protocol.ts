@@ -55,7 +55,7 @@ export const CommandRequestSchema = z.discriminatedUnion('type', [
   command('state.set-activity', z.object({ activity: ActivitySchema }).strict()),
   command('task.update', z.object({ task: TaskSchema }).strict()),
   command('task.complete', EmptyPayloadSchema),
-  command('metric.set-value', z.object({ id: z.enum(['tasks', 'tools']), value: z.number().int().min(0).max(9_999_999) }).strict()),
+  command('metric.set-value', z.object({ id: z.string().min(1).max(64), value: z.number().int().min(0).max(9_999_999) }).strict()),
   command('display.set-style', z.object({ style: DisplayStyleSchema }).strict()),
 ]);
 

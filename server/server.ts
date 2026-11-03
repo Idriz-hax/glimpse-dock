@@ -155,10 +155,13 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (!canTransitionActivity(state.activity, 'completed')) return null;
          next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully' };
        }
-     else if (command.type === 'metric.set-value') {
-        const widgets = state.widgets.map(widget => widget.id === command.payload.id && widget.content.kind === 'metric' ? { ...widget, content: { ...widget.content, value: String(command.payload.value) } } : widget);
-       if (!widgets.some(widget => widget.id === command.payload.id)) return null;
-       next = { ...state, widgets };
+      else if (command.type === 'metric.set-value') {
+        const widget = state.widgets.find(item => item.id === command.payload.id);
+        if (!widget) return { error: 'NOT_FOUND' };
+        if (widget.content.kind !== 'metric') return { error: 'INVALID_INPUT' };
+        const result = updateWidget(state.widgets, widget.id, { content: { ...widget.content, value: String(command.payload.value) } }, principal, now());
+        if (!result.ok) return { error: result.code };
+        next = { ...state, widgets: result.widgets };
      }
       else if (command.type === 'display.set-style') {
         if (principal !== 'owner') return null;

@@ -19,7 +19,7 @@ describe('protocol v1', () => {
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r6', type: 'unknown', payload: {} }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r7', type: 'task.update', payload: { task: 'x'.repeat(2049) } }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r8', type: 'task.update' }).success).toBe(false);
-    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r9', type: 'metric.set-value', payload: { id: 'runtime', value: 10 } }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r9', type: 'metric.set-value', payload: { id: 'runtime', value: 10 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r10', type: 'task.complete', payload: {}, extra: true }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r11', type: 'demo.add-widget', payload: {} }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'create', type: 'widget.create', payload: { widget: { version: 1, id: 'one', title: 'One', content: { kind: 'metric', label: 'One', value: '1' }, placement: 'primary', expiresAt: null } } }).success).toBe(true);
