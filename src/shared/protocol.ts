@@ -28,10 +28,10 @@ export const WidgetCreateSchema = z.object({ version: z.literal(1), id: WidgetId
 export const ActivitySchema = z.enum(['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error']);
 export const ActivityTransitions = {
   idle: ['idle', 'thinking', 'waiting', 'error'],
-  thinking: ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
-  'tool-use': ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
-  responding: ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
-  waiting: ['thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  thinking: ['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  'tool-use': ['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  responding: ['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
+  waiting: ['idle', 'thinking', 'tool-use', 'responding', 'waiting', 'completed', 'error'],
   completed: ['completed', 'idle', 'thinking'],
   error: ['error', 'idle', 'thinking'],
 } as const satisfies Record<z.infer<typeof ActivitySchema>, readonly z.infer<typeof ActivitySchema>[]>;

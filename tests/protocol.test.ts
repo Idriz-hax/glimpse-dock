@@ -10,6 +10,13 @@ describe('protocol v1', () => {
     expect(canTransitionActivity('completed', 'tool-use')).toBe(false);
     expect(canTransitionActivity('error', 'completed')).toBe(false);
   });
+  it('allows explicit interruption cleanup to idle from active states', () => {
+    for (const activity of ['thinking', 'tool-use', 'responding', 'waiting'] as const) {
+      expect(canTransitionActivity(activity, 'idle')).toBe(true);
+    }
+    expect(canTransitionActivity('completed', 'idle')).toBe(true);
+    expect(canTransitionActivity('error', 'idle')).toBe(true);
+  });
   it('accepts only known bounded commands', () => {
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r1', type: 'metric.set-value', payload: { id: 'tasks', value: 42 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r2', type: 'state.set-progress', payload: { progress: 100 } }).success).toBe(true);
