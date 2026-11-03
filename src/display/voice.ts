@@ -26,11 +26,13 @@ function parseEvent(value: unknown): VoiceEvent | null {
   return null;
 }
 
-export function mountVoice(root: ParentNode): () => void {
+export function mountVoice(root: ParentNode, csrf = ''): () => void {
   const status = root.querySelector<HTMLElement>('[data-voice-status]'), error = root.querySelector<HTMLElement>('[data-voice-error]'), transcript = root.querySelector<HTMLElement>('[data-transcript]'), subagents = root.querySelector<HTMLElement>('[data-subagents]');
   const enable = root.querySelector<HTMLButtonElement>('[data-voice-enable]'), manual = root.querySelector<HTMLButtonElement>('[data-voice-manual]'), pause = root.querySelector<HTMLButtonElement>('[data-voice-pause]'), mute = root.querySelector<HTMLButtonElement>('[data-voice-mute]'), stop = root.querySelector<HTMLButtonElement>('[data-voice-stop]');
   if (!status || !error || !transcript || !subagents || !enable || !manual || !pause || !mute || !stop) return () => {};
-  let socket: WebSocket | undefined, stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, processor: AudioWorkletNode | undefined, silent: GainNode | undefined, playback: AudioBufferSourceNode | undefined;
+   const wakeSelect = root.querySelector<HTMLSelectElement>('[data-wake-name]'), voiceSelect = root.querySelector<HTMLSelectElement>('[data-output-voice]'), readiness = root.querySelector<HTMLElement>('[data-voice-readiness]');
+   let socket: WebSocket | undefined, stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, processor: AudioWorkletNode | undefined, silent: GainNode | undefined, playback: AudioBufferSourceNode | undefined;
+   let generation = 0, disposed = false, ready = false;
   let paused = false, muted = false, currentTurn: number | null = null, tts: Extract<VoiceEvent, { type: 'tts-start' }> | undefined, ttsBytes: ArrayBuffer | undefined;
   const roster = new Map<string, 'active' | 'complete'>();
   const announce = (text: string) => { status.textContent = text; };
@@ -38,7 +40,7 @@ export function mountVoice(root: ParentNode): () => void {
   const send = (value: object) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value)); };
   const stopPlayback = () => { try { playback?.stop(); } catch { /* Playback may have ended between the UI event and stop. */ } playback?.disconnect(); playback = undefined; tts = undefined; ttsBytes = undefined; };
   const stopCapture = () => { processor?.port.postMessage('end'); processor?.disconnect(); silent?.disconnect(); source?.disconnect(); stream?.getTracks().forEach(track => track.stop()); processor = undefined; silent = undefined; source = undefined; stream = undefined; void context?.close(); context = undefined; };
-  const disable = () => { send({ type: 'stop' }); stopPlayback(); if (socket && socket.readyState < WebSocket.CLOSING) socket.close(); socket = undefined; stopCapture(); enable.disabled = false; enable.textContent = 'Enable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = true; announce('Voice is off'); };
+   const disable = () => { generation++; send({ type: 'stop' }); stopPlayback(); if (socket && socket.readyState < WebSocket.CLOSING) socket.close(); socket = undefined; stopCapture(); enable.disabled = !ready; enable.textContent = 'Enable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = true; announce('Voice is off'); void fetch('/api/voice/settings', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf, enabled: false, wakeModel: wakeSelect?.value || 'hey_hermes', voice: voiceSelect?.value || 'default' }) }).catch(() => {}); };
   const failProtocol = () => { error.textContent = 'The voice service sent an invalid update. Re-enable voice to reconnect.'; announce('Voice update invalid'); disable(); };
   const playPcm = async (raw: ArrayBuffer, meta: Extract<VoiceEvent, { type: 'tts-start' }>) => {
     if (meta.bytes !== raw.byteLength || raw.byteLength > 8 * 1024 * 1024 || meta.width !== 2 || ![1, 2].includes(meta.channels) || meta.rate < 8000 || meta.rate > 96000 || raw.byteLength % (meta.width * meta.channels) !== 0) throw new Error('Invalid audio frame');
@@ -75,11 +77,23 @@ export function mountVoice(root: ParentNode): () => void {
     };
     silent = context.createGain(); silent.gain.value = 0; source.connect(processor); processor.connect(silent); silent.connect(context.destination);
   };
-  enable.addEventListener('click', async () => {
+   void fetch('/api/voice/status', { credentials: 'same-origin' }).then(async response => { if (!response.ok) throw new Error('Voice status unavailable'); return response.json(); }).then(data => {
+     if (disposed) return;
+     const fill = (select: HTMLSelectElement | null, items: unknown[], fallback: string) => { if (!select) return; const values = items.filter((item): item is string => typeof item === 'string' && item.length > 0); select.replaceChildren(...values.map(value => { const option = document.createElement('option'); option.value = value; option.textContent = value; return option; })); if (values.includes(fallback)) select.value = fallback; else if (values.length) select.value = values[0]; };
+     fill(wakeSelect, data.wakeModels, 'hey_hermes'); fill(voiceSelect, data.voices, 'default'); ready = data.availability?.hermes === true && data.availability?.wyoming === true && !!wakeSelect?.options.length && !!voiceSelect?.options.length;
+     if (readiness) readiness.textContent = ready ? 'Voice services ready.' : 'Voice unavailable. Check Hermes and installed local voice services.';
+     enable.disabled = !ready;
+   }).catch(() => { if (!disposed) { if (readiness) readiness.textContent = 'Could not load voice availability.'; enable.disabled = true; } });
+   enable.addEventListener('click', async () => {
     if (socket) { disable(); return; }
-    enable.disabled = true; error.textContent = ''; announce('Requesting microphone permission');
-    try {
-      await capture(); socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/voice/session`); socket.binaryType = 'arraybuffer';
+     enable.disabled = true; const attempt = ++generation; error.textContent = ''; announce('Preparing voice session');
+     try {
+       const settings = await fetch('/api/voice/settings', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf, enabled: true, wakeModel: wakeSelect?.value, voice: voiceSelect?.value }) });
+       if (!settings.ok) throw new Error('Could not save voice settings');
+       const session = await fetch('/api/voice/session', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf }) });
+       if (!session.ok) throw new Error('Could not prepare Hermes session');
+       if (disposed || generation !== attempt) return;
+       announce('Requesting microphone permission'); await capture(); if (disposed || generation !== attempt) { stopCapture(); return; } socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/voice/session`); socket.binaryType = 'arraybuffer';
       socket.onopen = () => { send({ type: 'resume' }); enable.disabled = false; enable.textContent = 'Disable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = false; announce('Starting voice service'); };
       socket.onmessage = event => {
         if (typeof event.data !== 'string') { if (!tts || event.data.byteLength !== tts.bytes || ttsBytes) return failProtocol(); const meta = tts; ttsBytes = event.data; void playPcm(event.data, meta).catch(failProtocol); return; }
@@ -87,12 +101,12 @@ export function mountVoice(root: ParentNode): () => void {
       };
       socket.onclose = () => { stopPlayback(); stopCapture(); socket = undefined; manual.disabled = pause.disabled = mute.disabled = stop.disabled = true; enable.disabled = false; enable.textContent = 'Enable voice'; announce('Voice connection lost'); error.textContent = 'Connection lost. Enable voice to reconnect.'; };
       socket.onerror = () => { error.textContent = 'Voice service disconnected. Check that local speech services are running.'; };
-    } catch (cause) { stopCapture(); enable.disabled = false; error.textContent = cause instanceof DOMException && cause.name === 'NotAllowedError' ? 'Microphone permission was denied. Allow microphone access in your browser settings, then try again.' : 'Could not start the microphone. Check your browser and audio device.'; announce('Microphone unavailable'); }
+     } catch (cause) { stopCapture(); enable.disabled = !ready; error.textContent = cause instanceof DOMException && cause.name === 'NotAllowedError' ? 'Microphone permission was denied. Allow microphone access in your browser settings, then try again.' : cause instanceof Error ? cause.message : 'Could not start voice.'; announce('Voice unavailable'); }
   });
   manual.addEventListener('click', () => { if (muted) { announce('Unmute the microphone to speak'); return; } paused = false; pause.textContent = 'Pause listening'; send({ type: 'manual-start' }); announce('Listening for your turn'); });
   pause.addEventListener('click', () => { paused = !paused; send({ type: paused ? 'pause' : 'resume' }); pause.textContent = paused ? 'Resume listening' : 'Pause listening'; announce(paused ? 'Listening paused' : 'Listening for Hey Hermes'); });
   mute.addEventListener('click', () => { muted = !muted; mute.textContent = muted ? 'Unmute microphone' : 'Mute microphone'; announce(muted ? 'Microphone muted' : 'Microphone unmuted'); });
   stop.addEventListener('click', () => { send({ type: 'stop' }); stopPlayback(); announce('Current turn stopped'); });
-  const pagehide = () => disable(); window.addEventListener('pagehide', pagehide);
-  return () => { window.removeEventListener('pagehide', pagehide); disable(); };
+   const pagehide = () => disable(); window.addEventListener('pagehide', pagehide);
+   return () => { disposed = true; window.removeEventListener('pagehide', pagehide); disable(); };
 }
