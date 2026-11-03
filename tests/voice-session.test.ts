@@ -75,6 +75,21 @@ describe('VoiceSession', () => {
     h.session.close();
   });
 
+  it('starts manual STT after wake cleanup even when the capture limit expires first', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const detectorStarted = deferred(), releaseDetector = deferred();
+    h.wyoming.detectWake.mockImplementation(async () => { detectorStarted.resolve(); await releaseDetector.promise; });
+    h.message(JSON.stringify({ type: 'resume' })); await detectorStarted.promise;
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(7), true);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(h.wyoming.transcribe).not.toHaveBeenCalled();
+    releaseDetector.resolve(); await flush();
+    expect(h.consumed).toEqual([7]);
+    expect(h.wyoming.transcribe).toHaveBeenCalledTimes(1);
+    h.session.close();
+  });
+
   it('ends at the capture cap and does not submit an empty transcript', async () => {
     vi.useFakeTimers();
     const h = harness('');
@@ -122,7 +137,8 @@ describe('VoiceSession', () => {
     expect(JSON.stringify(h.sent)).not.toContain('private-run-id');
     const speaking = data.findLast(x => x.type === 'state' && x.phase === 'speaking');
     expect(speaking).toBeTruthy();
-    h.message(JSON.stringify({ type: 'playback-ended', turn: 'wrong' }));
+    expect(typeof speaking.turn).toBe('number');
+    h.message(JSON.stringify({ type: 'playback-ended', turn: speaking.turn + 1 }));
     expect(h.detectorCount).toBe(0);
     h.message(JSON.stringify({ type: 'playback-ended', turn: speaking.turn }));
     await flush();

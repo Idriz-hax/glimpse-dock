@@ -33,7 +33,8 @@ const json = (value: object) => JSON.stringify(value);
 /** One socket's synchronous ingress dispatcher and fenced voice-turn lifecycle. */
 export class VoiceSession {
   private phase: Phase = 'paused';
-  private turn?: string;
+  private turn?: number;
+  private turnCounter = 0;
   private generation = 0;
   private currentQueue?: PcmQueue;
   private wakeQueue?: PcmQueue;
@@ -73,14 +74,14 @@ export class VoiceSession {
     const value = control as Record<string, unknown>;
     const keys = Object.keys(value);
     if (keys.some(key => key !== 'type' && !(value.type === 'playback-ended' && key === 'turn')) ||
-      (value.type === 'playback-ended' && typeof value.turn !== 'string')) {
+      (value.type === 'playback-ended' && (!Number.isSafeInteger(value.turn) || typeof value.turn !== 'number'))) {
       this.send({ type: 'error', code: 'INVALID_MESSAGE', turn: this.turn ?? null }); return;
     }
     switch (value.type) {
       case 'resume': if (this.phase === 'paused' && !this.remoteActive && this.options.settings.enabled !== false) this.startWake(); break;
       case 'pause': case 'stop': this.pause(); break;
       case 'manual-start': this.manualStart(); break;
-      case 'playback-ended': if (this.phase === 'speaking' && typeof value.turn === 'string' && value.turn === this.turn) { this.turn = undefined; this.setPhase('wake'); this.startWake(); } break;
+      case 'playback-ended': if (this.phase === 'speaking' && value.turn === this.turn) { this.turn = undefined; this.setPhase('wake'); this.startWake(); } break;
       default: this.send({ type: 'error', code: 'INVALID_MESSAGE', turn: this.turn ?? null });
     }
   }
@@ -136,7 +137,7 @@ export class VoiceSession {
     const queue = new PcmQueue();
     this.currentQueue = queue;
     this.captureBytes = 0;
-    this.turn = randomUUID();
+    this.turn = ++this.turnCounter;
     const generation = ++this.generation;
     this.setPhase('capturing');
     if (source === 'wake') this.send({ type: 'wake', name: this.safeName(wakeName), turn: this.turn });
@@ -148,7 +149,7 @@ export class VoiceSession {
 
   private startTranscription(): void {
     const queue = this.currentQueue, turn = this.turn, generation = this.generation;
-    if (!queue || !turn || this.phase !== 'capturing') return;
+    if (!queue || !turn || !['capturing', 'transcribing'].includes(this.phase)) return;
     const controller = new AbortController(); this.turnController = controller;
     void (async () => {
       try {
@@ -168,7 +169,7 @@ export class VoiceSession {
     })();
   }
 
-  private async runHermes(text: string, turn: string, generation: number): Promise<void> {
+  private async runHermes(text: string, turn: number, generation: number): Promise<void> {
     if (this.remoteActive || !this.isCurrent(generation, turn)) return;
     this.remoteActive = true; // Fail closed from before startRun until a terminal event is observed.
     this.remoteStopRequested = false;
@@ -250,7 +251,7 @@ export class VoiceSession {
     if (phase !== 'closed') this.send({ type: 'state', phase, turn: this.turn ?? null });
   }
 
-  private isCurrent(generation: number, turn: string): boolean { return !this.closed && this.generation === generation && this.turn === turn; }
+  private isCurrent(generation: number, turn: number): boolean { return !this.closed && this.generation === generation && this.turn === turn; }
   private clearCaptureTimer(): void { if (this.captureTimer) clearTimeout(this.captureTimer); this.captureTimer = undefined; }
   private safeName(name: unknown): string { return typeof name === 'string' ? name.slice(0, 128) : this.options.settings.wakeModel.slice(0, 128); }
   private send(event: object): void { if (!this.closed) this.options.socket.send(json(event)); }
