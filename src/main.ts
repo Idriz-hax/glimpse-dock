@@ -4,7 +4,7 @@ import './auth/auth.css';
 import { resolveRoute } from './routes';
 import { renderDisplay } from './display/view';
 import { mountDisplayWidgets } from './display/widgets';
-import { bindAdminEvents, renderAdmin, type AdminPage } from './admin/view';
+import { bindAdminEvents, renderAdmin, type AdminPage, type SampleKind } from './admin/view';
 import { renderDisplayGate, renderOwnerGate } from './auth/view';
 import { type State } from './demo-state';
 import { commandForInput, validSnapshot, parseStateMessage } from './frontend-client';
@@ -24,7 +24,14 @@ function render() {
   if (!state) { app.textContent = 'Loading workspace…'; return; }
   if (displayMode) { app.innerHTML = renderDisplay(state, demoMode, streamConnected); mountDisplayWidgets(app, state.widgets); return; }
   app.innerHTML = renderAdmin(state, page, { demoMode, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
-  bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
+  bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), widgetAction: (type, payload) => { void send(type, payload); }, widgetSample: kind => sampleWidget(kind), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
+}
+function sampleWidget(kind: SampleKind) {
+  if (!state) return;
+  const id = `test-${kind}`, existing = state.widgets.some(widget => widget.id === id);
+  const content = kind === 'text' ? { kind, text: 'Structured text sample' } : kind === 'status' ? { kind, label: 'All systems ready', tone: 'success' as const } : kind === 'metric' ? { kind, label: 'Requests', value: '128', unit: 'total', caption: 'Sample metric' } : kind === 'progress' ? { kind, label: 'Build progress', value: 72 } : { kind, primitives: [{ kind: 'circle' as const, cx: 50, cy: 50, radius: 24, color: 'cyan' as const }, { kind: 'text' as const, x: 50, y: 54, text: 'OK', color: 'white' as const, size: 8 }] };
+  if (existing) void send('widget.update', { id, title: `${kind[0].toUpperCase()}${kind.slice(1)} sample`, content });
+  else void send('widget.create', { widget: { version: 1, id, title: `${kind[0].toUpperCase()}${kind.slice(1)} sample`, content, placement: 'secondary', expiresAt: null } });
 }
 function bindGate() {
   app.querySelector<HTMLButtonElement>('[data-auth-mode]')?.addEventListener('click', event => { authMode = (event.currentTarget as HTMLElement).dataset.authMode as 'setup' | 'login'; gateError = ''; render(); });

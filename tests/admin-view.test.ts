@@ -41,4 +41,16 @@ describe('Admin view', () => {
       expect(html).not.toMatch(new RegExp(`value="${style === 'quiet' ? 'ambient' : 'quiet'}" checked`));
     }
   });
+  it('lists widget metadata, hidden and expired status, escaped fields and management controls', () => {
+    const state = initialState();
+    state.widgets = [{ ...state.widgets[0], id: '<hostile>', title: '<img src=x>', owner: '<owner>', placement: 'notification', visible: false, expiresAt: 1 }];
+    const html = renderAdmin(state, 'widgets', { demoMode: false }, 2);
+    expect(html).toContain('&lt;img src=x&gt;'); expect(html).toContain('&lt;owner&gt;');
+    expect(html).not.toContain('<img src=x>'); expect(html).toContain('metric'); expect(html).toContain('notification');
+    expect(html).toContain('Hidden'); expect(html).toContain('Expired'); expect(html).toContain('data-widget-action="show"'); expect(html).toContain('data-widget-action="remove"');
+  });
+  it('offers create/update sample controls for all five kinds', () => {
+    const html = renderAdmin(initialState(), 'widgets', { demoMode: false });
+    for (const kind of ['text', 'status', 'metric', 'progress', 'visual']) expect(html).toContain(`data-widget-sample="${kind}"`);
+  });
 });
