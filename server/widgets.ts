@@ -25,8 +25,10 @@ export function updateWidget(widgets: Widget[], id: string, patch: unknown, prin
   if (!canManage(current, principal)) return fail('FORBIDDEN');
   if (!patch || typeof patch !== 'object' || Array.isArray(patch) || Object.keys(patch).some(k => !['title', 'content', 'placement', 'expiresAt'].includes(k))) return fail('INVALID_INPUT');
   const updated = { ...current, ...patch, updatedAt: now };
-  if (!validExpiry(updated.expiresAt, now) || !WidgetSchema.safeParse(updated).success) return fail('INVALID_INPUT');
-  const next = widgets.map((w, i) => i === index ? updated : w);
+  if (!validExpiry(updated.expiresAt, now)) return fail('INVALID_INPUT');
+  const parsed = WidgetSchema.safeParse(updated);
+  if (!parsed.success) return fail('INVALID_INPUT');
+  const next = widgets.map((w, i) => i === index ? parsed.data : w);
   return fit(next) ? { ok: true, widgets: next } : fail('CONFLICT');
 }
 

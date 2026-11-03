@@ -15,6 +15,13 @@ describe('widget lifecycle', () => {
     const result = updateWidget([before], 'one', { title: 'new' }, agent(), 20);
     expect(result.ok && result.widgets[0]).toMatchObject({ id: 'one', owner: 'agent:abc', createdAt: 1, updatedAt: 20, title: 'new' });
   });
+  it('does not retain caller-owned patch content', () => {
+    const content = { kind: 'text' as const, text: 'validated' };
+    const patch = { content };
+    const result = updateWidget([widget('one')], 'one', patch, 'owner', 20);
+    content.text = 'mutated';
+    expect(result.ok && result.widgets[0].content).toEqual({ kind: 'text', text: 'validated' });
+  });
   it('changes visibility and removes records', () => {
     expect(setWidgetVisibility([widget('one')], 'one', false, 'owner')).toMatchObject({ ok: true, widgets: [{ visible: false }] });
     expect(removeWidget([widget('one')], 'one', 'owner')).toEqual({ ok: true, widgets: [] });
