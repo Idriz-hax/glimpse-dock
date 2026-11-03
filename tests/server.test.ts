@@ -193,9 +193,9 @@ describe('backend', () => {
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (requestId: string, type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId, type, payload } });
-    const sample = { version: 1, id: 'sample-text', title: 'Text sample', content: { kind: 'text', text: 'sample' }, placement: 'secondary', expiresAt: null };
+    const sample = { version: 1, id: 'test-text', title: 'Text sample', content: { kind: 'text', text: 'sample' }, placement: 'secondary', expiresAt: null };
     expect((await send('sample-create', 'widget.create', { widget: sample })).statusCode).toBe(200);
-    expect((await send('sample-update', 'widget.update', { id: 'sample-text', title: 'Updated sample' })).statusCode).toBe(200);
+    expect((await send('sample-update', 'widget.update', { id: 'test-text', title: 'Updated sample' })).statusCode).toBe(200);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: 'owner', title: 'Updated sample' });
   });
   it('authorizes legacy metric updates through widget ownership', async () => {
