@@ -25,7 +25,7 @@ const sameLoopbackOrigin = (origin: string | undefined, host: string | undefined
   } catch { return false; }
 };
 const empty = ProtocolStateSchema.parse({ agent: '', task: '', progress: 0, running: false, widgets: [], logs: [] });
-type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; demo?: boolean };
+type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; demo?: boolean; now?: () => number };
 
 export async function createServer(options: Options = {}): Promise<FastifyInstance> {
   const db = new Database(options.database ?? 'glimpse-dock.sqlite');
@@ -37,9 +37,13 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
     CREATE TABLE IF NOT EXISTS widget_commands (principal TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(principal,request_id));
     CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, detail TEXT NOT NULL);`);
    db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)').run();
-   if (!db.prepare('SELECT 1 FROM pragma_table_info(\'agents\') WHERE name=\'agent_id\'').get()) db.exec('ALTER TABLE agents ADD COLUMN agent_id TEXT');
-   for (const row of db.prepare('SELECT digest FROM agents WHERE agent_id IS NULL').all() as any[]) db.prepare('UPDATE agents SET agent_id=? WHERE digest=?').run(randomUUID(), row.digest);
-   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agents_agent_id ON agents(agent_id); INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)');
+   db.transaction(() => {
+     if (!db.prepare('SELECT 1 FROM pragma_table_info(\'agents\') WHERE name=\'agent_id\'').get()) db.exec('ALTER TABLE agents ADD COLUMN agent_id TEXT');
+     for (const row of db.prepare('SELECT digest FROM agents WHERE agent_id IS NULL').all() as any[]) db.prepare('UPDATE agents SET agent_id=? WHERE digest=?').run(randomUUID(), row.digest);
+     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agents_agent_id ON agents(agent_id)');
+     db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)').run();
+   })();
+   const now = options.now ?? Date.now;
   const read = (key: string) => db.prepare('SELECT value FROM kv WHERE key=?').get(key) as {value:string}|undefined;
    let state = read('state') ? ProtocolStateSchema.parse(JSON.parse(read('state')!.value)) : options.demo ? createDemoState() : empty;
    let revision = Number(read('revision')?.value ?? 0);
@@ -128,9 +132,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
         if (prior) return prior.fingerprint === fingerprint ? { revision: prior.revision } : { error: 'CONFLICT' };
         let result;
         switch (command.type) {
-          case 'widget.create': result = createWidget(state.widgets, command.payload.widget, principal, Date.now()); break;
-          case 'widget.update': result = updateWidget(state.widgets, command.payload.id, { title: command.payload.title, content: command.payload.content, placement: command.payload.placement, expiresAt: command.payload.expiresAt }, principal, Date.now()); break;
-          case 'widget.set-visibility': result = setWidgetVisibility(state.widgets, command.payload.id, command.payload.visible, principal); break;
+          case 'widget.create': result = createWidget(state.widgets, command.payload.widget, principal, now()); break;
+          case 'widget.update': result = updateWidget(state.widgets, command.payload.id, Object.fromEntries(Object.entries(command.payload).filter(([key]) => key !== 'id')), principal, now()); break;
+          case 'widget.set-visibility': result = setWidgetVisibility(state.widgets, command.payload.id, command.payload.visible, principal, now()); break;
           case 'widget.remove': result = removeWidget(state.widgets, command.payload.id, principal); break;
         }
         if (!result.ok) return { error: result.code };
@@ -139,7 +143,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       const isDemoCommand = command.type.startsWith('demo.');
      if (isDemoCommand) {
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
-       next = transitionDemo(state, command);
+       next = transitionDemo(state, command, now());
       } else if (isWidgetCommand) { /* handled through widget lifecycle */ }
       else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null };
       else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
@@ -171,7 +175,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       return commit(next, command.type, principal === 'demo' || isDemoCommand ? 'demo' : principalSource(principal));
    };
     const cleanupExpired = () => {
-      const cleaned = removeExpiredWidgets(state.widgets, Date.now());
+      const cleaned = removeExpiredWidgets(state.widgets, now());
       if (cleaned.ok && cleaned.widgets.length !== state.widgets.length) commit({ ...state, widgets: cleaned.widgets }, 'widget.expiry-cleanup', source);
     };
     cleanupExpired();

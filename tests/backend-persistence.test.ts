@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import WebSocket from 'ws';
 import Database from 'better-sqlite3';
 import { createServer } from '../server/server.ts';
+import { createDemoState } from '../server/adapters/demo.ts';
 
 describe('backend persistence and websocket integration', () => {
   let app: Awaited<ReturnType<typeof createServer>> | undefined;
@@ -62,6 +63,41 @@ describe('backend persistence and websocket integration', () => {
     const restored = await fetch(`${base}/api/state`, { headers: { cookie: loginCookie } });
     expect(restored.status).toBe(200);
     expect(await restored.json()).toMatchObject({ revision: 1, state: { task: 'survives restart' } });
+  });
+
+  it('backfills a legacy agent identity transactionally and keeps it stable on restart', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'glimpse-backend-'));
+    const database = join(directory, 'legacy.sqlite');
+    const legacy = new Database(database);
+    legacy.exec("CREATE TABLE agents (digest TEXT PRIMARY KEY, revoked INTEGER NOT NULL DEFAULT 0); INSERT INTO agents(digest,revoked) VALUES ('legacy-digest',0);");
+    legacy.close();
+    app = await createServer({ database });
+    const db = new Database(database);
+    const id = (db.prepare('SELECT agent_id FROM agents WHERE digest=?').get('legacy-digest') as { agent_id: string }).agent_id;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect((db.prepare('SELECT version FROM schema_migrations WHERE version=2').get() as { version: number }).version).toBe(2);
+    db.close();
+    await app.close(); app = undefined;
+    app = await createServer({ database });
+    const reopened = new Database(database);
+    expect((reopened.prepare('SELECT agent_id FROM agents WHERE digest=?').get('legacy-digest') as { agent_id: string }).agent_id).toBe(id);
+    reopened.close();
+  });
+
+  it('cleans expired widgets at startup using the injected clock and commits once', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'glimpse-backend-'));
+    const database = join(directory, 'expiry.sqlite');
+    const seeded = createDemoState();
+    seeded.widgets[0].expiresAt = 99;
+    const db = new Database(database);
+    db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    const put = db.prepare('INSERT INTO kv(key,value) VALUES (?,?)');
+    put.run('state', JSON.stringify(seeded)); put.run('revision', '4'); put.run('source', 'demo'); db.close();
+    app = await createServer({ database, now: () => 100 });
+    const check = new Database(database);
+    expect(JSON.parse((check.prepare("SELECT value FROM kv WHERE key='state'").get() as { value: string }).value).widgets.map((widget: { id: string }) => widget.id)).toEqual(['tools', 'runtime']);
+    expect((check.prepare("SELECT value FROM kv WHERE key='revision'").get() as { value: string }).value).toBe('5');
+    check.close();
   });
 
   it('persists display style across restart and broadcasts the style transition', async () => {

@@ -32,12 +32,12 @@ export function updateWidget(widgets: Widget[], id: string, patch: unknown, prin
   return fit(next) ? { ok: true, widgets: next } : fail('CONFLICT');
 }
 
-export function setWidgetVisibility(widgets: Widget[], id: string, visible: boolean, principal: WidgetPrincipal): WidgetResult {
+export function setWidgetVisibility(widgets: Widget[], id: string, visible: boolean, principal: WidgetPrincipal, now: number): WidgetResult {
   const index = widgets.findIndex(w => w.id === id);
   if (index < 0) return fail('NOT_FOUND');
   if (!canManage(widgets[index], principal)) return fail('FORBIDDEN');
   if (typeof visible !== 'boolean') return fail('INVALID_INPUT');
-  const next = widgets.map((w, i) => i === index ? { ...w, visible } : w);
+  const next = widgets.map((w, i) => i === index ? { ...w, visible, updatedAt: now } : w);
   return fit(next) ? { ok: true, widgets: next } : fail('CONFLICT');
 }
 

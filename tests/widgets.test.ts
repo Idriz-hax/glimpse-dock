@@ -23,8 +23,14 @@ describe('widget lifecycle', () => {
     expect(result.ok && result.widgets[0].content).toEqual({ kind: 'text', text: 'validated' });
   });
   it('changes visibility and removes records', () => {
-    expect(setWidgetVisibility([widget('one')], 'one', false, 'owner')).toMatchObject({ ok: true, widgets: [{ visible: false }] });
+    expect(setWidgetVisibility([widget('one')], 'one', false, 'owner', 20)).toMatchObject({ ok: true, widgets: [{ visible: false, updatedAt: 20 }] });
     expect(removeWidget([widget('one')], 'one', 'owner')).toEqual({ ok: true, widgets: [] });
+  });
+  it('preserves untouched fields on partial updates', () => {
+    const before = widget('one');
+    const content = { kind: 'status' as const, label: 'Ready', tone: 'success' as const };
+    expect(updateWidget([before], 'one', { content }, 'owner', 20)).toMatchObject({ ok: true, widgets: [{ title: 'one', content, placement: 'primary' }] });
+    expect(updateWidget([before], 'one', { title: 'Renamed' }, 'owner', 20)).toMatchObject({ ok: true, widgets: [{ title: 'Renamed', content: before.content, placement: 'primary' }] });
   });
   it('removes expired records deterministically', () => {
     expect(removeExpiredWidgets([widget('b', 'owner', true, 5), widget('a'), widget('c', 'owner', true, 5)], 5)).toEqual({ ok: true, widgets: [widget('a')] });

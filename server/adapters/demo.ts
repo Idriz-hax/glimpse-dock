@@ -14,7 +14,7 @@ export function createDemoState(): State {
   return state;
 }
 
-export function transitionDemo(state: State, command: CommandRequest): State {
+export function transitionDemo(state: State, command: CommandRequest, now = Date.now()): State {
   let next = { ...state, widgets: state.widgets.map(widget => ({ ...widget })), logs: [...state.logs] };
   const addLog = (title: string, detail: string, level: Level = 'info') => {
     next.logs.unshift({ id: Math.max(0, ...next.logs.map(log => log.id)) + 1, time: stamp(), title, detail, level });
@@ -44,8 +44,8 @@ export function transitionDemo(state: State, command: CommandRequest): State {
 
   const actions = [
     () => { next.progress = Math.min(100, (next.progress ?? 0) + 11); next.activity = next.progress === 100 ? 'completed' : 'thinking'; addLog(next.activity === 'completed' ? 'Task completed' : 'Task progress updated', `Current task advanced to ${next.progress}%`, 'success'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 3) } }, 'demo', Date.now()); if (result.ok) next.widgets = result.widgets; } next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
-    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 1) } }, 'demo', Date.now()); if (result.ok) next.widgets = result.widgets; } next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tools'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 3) } }, 'demo', now); if (result.ok) next.widgets = result.widgets; } next.activity = 'tool-use'; addLog('Tool calls updated', 'Demo agent executed three simulated tools'); },
+    () => { const widget = next.widgets.find(item => item.id === 'tasks'); if (widget?.content.kind === 'metric') { const result = updateWidget(next.widgets, widget.id, { content: { ...widget.content, value: String(Number(widget.content.value) + 1) } }, 'demo', now); if (result.ok) next.widgets = result.widgets; } next.progress = 100; next.activity = 'completed'; addLog('Task completed', 'Demo agent finished a mock action', 'success'); },
     () => { startFreshTask(); next.progress = 28; addLog('New task started', next.task); },
   ];
   actions[Math.floor(Math.random() * actions.length)]();
