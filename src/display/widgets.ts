@@ -32,3 +32,15 @@ export function renderWidget(input: Widget, now = Date.now()): HTMLElement | nul
   }
   return card;
 }
+
+export function mountDisplayWidgets(root: HTMLElement, widgets: Widget[], now = Date.now()): void {
+  const visible = widgets.map(widget => ({ widget, element: renderWidget(widget, now) })).filter((item): item is { widget: Widget; element: HTMLElement } => item.element !== null);
+  visible.sort((a, b) => a.widget.createdAt - b.widget.createdAt || a.widget.id.localeCompare(b.widget.id));
+  for (const { widget, element } of visible.slice(0, 12)) root.querySelector(`[data-placement="${widget.placement}"]`)?.append(element);
+  root.querySelectorAll<HTMLElement>('.display-slot-region').forEach(region => { region.hidden = region.childElementCount === 0; });
+  const empty = root.querySelector<HTMLElement>('.display-empty')!;
+  empty.hidden = visible.length !== 0;
+  const overflow = root.querySelector<HTMLElement>('.display-overflow')!;
+  overflow.hidden = visible.length <= 12;
+  if (visible.length > 12) overflow.textContent = `+${visible.length - 12} more slots`;
+}

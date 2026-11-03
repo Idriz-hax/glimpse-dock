@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initialState } from '../src/demo-state';
 import { renderDisplay } from '../src/display/view';
-import { renderWidget } from '../src/display/widgets';
+import { mountDisplayWidgets, renderWidget } from '../src/display/widgets';
 import { WidgetSchema } from '../src/shared/protocol';
 
 class TestElement {
@@ -11,9 +11,17 @@ class TestElement {
   className = '';
   textContent = '';
   attributes: Record<string, string> = {};
+  hidden = false;
   constructor(readonly tagName: string) {}
   append(...items: TestElement[]) { this.children.push(...items); }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
+  get childElementCount() { return this.children.length; }
+  querySelector(selector: string): TestElement | null {
+    if (selector.startsWith('[data-placement=')) return this.children.find(child => child.dataset.placement === selector.match(/"([^"]+)"/)?.[1]) ?? null;
+    const className = selector.slice(1);
+    return this.children.find(child => child.className.split(' ').includes(className)) ?? null;
+  }
+  querySelectorAll(selector: string): TestElement[] { return this.children.filter(child => selector === '.display-slot-region' && child.className === selector.slice(1)); }
 }
 
 describe('display render boundary', () => {
@@ -30,6 +38,38 @@ describe('display render boundary', () => {
     const distinct = renderWidget(metric('different', 'Queue', 'Jobs waiting'))!;
     expect(duplicate.children.filter(child => child.className === 'display-slot-label')).toHaveLength(0);
     expect(distinct.children.find(child => child.className === 'display-slot-label')?.textContent).toBe('Jobs waiting');
+  });
+
+  it('validates visual primitive bounds and exposes accessible widget labels', () => {
+    vi.stubGlobal('document', { createElement: (tag: string) => new TestElement(tag), createElementNS: (_namespace: string, tag: string) => new TestElement(tag) });
+    const base = { version: 1 as const, owner: 'owner', id: 'visual', title: 'Diagram', placement: 'primary' as const, visible: true, createdAt: 1, updatedAt: 1, expiresAt: null };
+    const visual = WidgetSchema.parse({ ...base, content: { kind: 'visual', primitives: [{ kind: 'circle', cx: 100, cy: 0, radius: 100, color: 'cyan' }] } });
+    const rendered = renderWidget(visual)!;
+    const scene = rendered.children[1], circle = scene.children[0];
+    expect(scene.attributes).toMatchObject({ role: 'img', 'aria-label': 'Diagram visual' });
+    expect(circle.attributes).toMatchObject({ cx: '100', cy: '0', r: '100', fill: '#78d8e8' });
+    expect(rendered.attributes['aria-label']).toBe('Diagram, visual slot');
+    const invalid = { ...visual, content: { kind: 'visual', primitives: [{ kind: 'circle', cx: 101, cy: 50, radius: 10, color: 'cyan' }] } } as never;
+    expect(renderWidget(invalid)).toBeNull();
+    const progress = WidgetSchema.parse({ ...base, id: 'progress', content: { kind: 'progress', label: 'Build', value: 50 } });
+    expect(renderWidget(progress)?.children.find(child => child.attributes.role === 'progressbar')?.attributes['aria-label']).toBe('Build');
+  });
+
+  it('mounts slots in stable placement order, shows empty state, and reports overflow beyond twelve', () => {
+    vi.stubGlobal('document', { createElement: (tag: string) => new TestElement(tag), createElementNS: (_namespace: string, tag: string) => new TestElement(tag) });
+    const root = new TestElement('main');
+    for (const placement of ['primary', 'secondary', 'notification']) { const region = new TestElement('section'); region.className = 'display-slot-region'; region.dataset.placement = placement; root.append(region); }
+    const empty = new TestElement('p'); empty.className = 'display-empty'; root.append(empty);
+    const overflow = new TestElement('p'); overflow.className = 'display-overflow'; root.append(overflow);
+    const make = (id: string, createdAt: number, placement: 'primary' | 'secondary' | 'notification' = 'primary') => WidgetSchema.parse({ version: 1, id, owner: 'owner', title: id, content: { kind: 'text', text: id }, placement, visible: true, createdAt, updatedAt: createdAt, expiresAt: null });
+    mountDisplayWidgets(root as never, [], 100);
+    expect(empty.hidden).toBe(false);
+    const widgets = [make('z', 1), make('b', 1), make('a', 1), make('secondary', 0, 'secondary'), ...Array.from({ length: 10 }, (_, i) => make(`later-${i}`, i + 2))];
+    mountDisplayWidgets(root as never, widgets, 100);
+    expect(root.children[0].children.map(el => el.dataset.widgetId)).toEqual(['a', 'b', 'z', 'later-0', 'later-1', 'later-2', 'later-3', 'later-4', 'later-5', 'later-6', 'later-7']);
+    expect(root.children[1].children.map(el => el.dataset.widgetId)).toEqual(['secondary']);
+    expect(empty.hidden).toBe(true);
+    expect(overflow.textContent).toBe('+2 more slots');
   });
 
   it('keeps demo copy by default and uses neutral copy outside demo mode', () => {
