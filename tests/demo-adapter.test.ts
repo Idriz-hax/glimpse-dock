@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDemoState, transitionDemo } from '../server/adapters/demo.ts';
 
 describe('Demo adapter', () => {
+  afterEach(() => vi.restoreAllMocks());
   it('starts with explicit demo labeling, seeded widgets and retained seed activity', () => {
     const state = createDemoState(1234);
     expect(state.agent).toBe('Hermes (Demo)');
@@ -22,7 +23,6 @@ describe('Demo adapter', () => {
     expect(updated.widgets.find(widget => widget.id === 'demo-status')?.updatedAt).toBe(300);
     vi.spyOn(Math, 'random').mockReturnValue(0.95);
     expect(transitionDemo(updated, command, 400).widgets.some(widget => widget.id === 'demo-status')).toBe(false);
-    vi.restoreAllMocks();
   });
 
   it('simulates a bounded action and supports pause and reset through the same command boundary', () => {
@@ -35,7 +35,6 @@ describe('Demo adapter', () => {
     expect(paused.running).toBe(false);
     expect(transitionDemo(original, { v: 1, requestId: 'widget', type: 'widget.create', payload: { widget: { version: 1, id: 'extra', title: 'Extra', content: { kind: 'metric', label: 'Extra', value: '0' }, placement: 'secondary', expiresAt: null } } }).widgets).toHaveLength(3);
     expect(transitionDemo(paused, { v: 1, requestId: '3', type: 'demo.reset', payload: {} }, 123)).toEqual(original);
-    vi.restoreAllMocks();
   });
 
   it('sets activity and completion consistently for demo actions', () => {
@@ -46,7 +45,6 @@ describe('Demo adapter', () => {
     const completed = transitionDemo(original, { v: 1, requestId: 'complete', type: 'demo.simulate', payload: {} });
     expect(completed).toMatchObject({ progress: 100, activity: 'completed' });
     expect(transitionDemo(completed, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } })).toMatchObject({ progress: 100, activity: 'completed', running: false });
-    vi.restoreAllMocks();
   });
 
   it('starts a fresh task when resuming or simulating from a terminal state', () => {
@@ -59,6 +57,5 @@ describe('Demo adapter', () => {
       expect(transitionDemo(terminal, { v: 1, requestId: 'simulate', type: 'demo.simulate', payload: {} }))
         .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace' });
     }
-    vi.restoreAllMocks();
   });
 });

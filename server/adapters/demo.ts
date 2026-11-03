@@ -2,7 +2,7 @@ import { initialState, type State, type Level } from '../../src/demo-state.ts';
 import type { CommandRequest } from '../../src/shared/protocol.ts';
 import { createWidget, removeWidget, updateWidget } from '../widgets.ts';
 
-const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const stamp = (now: number) => new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 export function createDemoState(now = Date.now()): State {
   const state = initialState();
@@ -13,9 +13,9 @@ export function createDemoState(now = Date.now()): State {
     if (result.ok) state.widgets = result.widgets;
   }
   state.logs = [
-    { id: 3, time: stamp(), title: 'Connection established', detail: 'Local simulation is active', level: 'success' },
-    { id: 2, time: stamp(), title: 'Agent started a task', detail: state.task, level: 'info' },
-    { id: 1, time: stamp(), title: 'Widget data updated', detail: 'Tool calls refreshed by demo agent', level: 'success' },
+    { id: 3, time: stamp(now), title: 'Connection established', detail: 'Local simulation is active', level: 'success' },
+    { id: 2, time: stamp(now), title: 'Agent started a task', detail: state.task, level: 'info' },
+    { id: 1, time: stamp(now), title: 'Widget data updated', detail: 'Tool calls refreshed by demo agent', level: 'success' },
   ];
   return state;
 }
@@ -23,7 +23,7 @@ export function createDemoState(now = Date.now()): State {
 export function transitionDemo(state: State, command: CommandRequest, now = Date.now()): State {
   let next = { ...state, widgets: state.widgets.map(widget => ({ ...widget })), logs: [...state.logs] };
   const addLog = (title: string, detail: string, level: Level = 'info') => {
-    next.logs.unshift({ id: Math.max(0, ...next.logs.map(log => log.id)) + 1, time: stamp(), title, detail, level });
+    next.logs.unshift({ id: Math.max(0, ...next.logs.map(log => log.id)) + 1, time: stamp(now), title, detail, level });
     next.logs = next.logs.slice(0, 40);
   };
   const startFreshTask = () => {

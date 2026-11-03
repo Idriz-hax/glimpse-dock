@@ -25,12 +25,14 @@ Commands are strict `{ v: 1, requestId, type, payload }` objects. Current types 
 | `demo.simulate` | `{}` | Owner, only when Demo is enabled; server scheduler uses same boundary |
 | `demo.set-enabled` | `{ enabled: boolean }` | Owner, only when Demo is enabled |
 | `demo.reset` | `{}` | Owner, only when Demo is enabled |
-| `widget.create` | `{ widget: { version: 1, id, title, content, placement, expiresAt } }` | Owner is assigned server-side |
-| `widget.update` | `{ id, title?, content?, placement?, expiresAt? }` | Owner is assigned server-side |
-| `widget.set-visibility` | `{ id, visible }` | Owner is assigned server-side |
-| `widget.remove` | `{ id }` | Owner is assigned server-side |
+| `widget.create` | `{ widget: { version: 1, id, title, content, placement, expiresAt } }` | Server assigns owner and timestamps; owner can create for the workspace, an agent creates for itself |
+| `widget.update` | `{ id, title?, content?, placement?, expiresAt? }` | Owner may update any widget; an agent may update only its own |
+| `widget.set-visibility` | `{ id, visible }` | Owner may manage any widget; an agent may manage only its own |
+| `widget.remove` | `{ id }` | Owner may remove any widget; an agent may remove only its own |
 
 Owner commands POST to `/api/command` with the command plus a `csrf` field. Agent commands use the same endpoint and command object with `Authorization: Bearer <credential>`; agent requests do not use browser cookies or CSRF. Display sessions cannot mutate state. Commands are not retried automatically by the browser.
+
+See [Structured widgets](../widgets/structured-widgets.md) for the complete v1 widget record, schemas and bounds, examples, identity rules, placement, expiry, and retry semantics.
 
 ## HTTP endpoints
 
@@ -52,4 +54,4 @@ Application error bodies carry an error code, a generic message, and a request I
 
 ## Versioning boundary
 
-Protocol v1 is local and not yet a public compatibility promise. Hermes integration, idempotency keys, richer widget ownership/lifecycle commands, and event replay are later roadmap work.
+Protocol v1 is local and not yet a public compatibility promise. Widget lifecycle commands have principal-scoped idempotency records; this does not add general event replay. Hermes integration and executable custom widget code remain out of scope.

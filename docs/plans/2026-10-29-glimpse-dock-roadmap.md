@@ -96,6 +96,8 @@ Do not move the whole app into the suggested monorepo layout unless implementati
 
 ## Milestone 4 — Structured widget system (critical)
 
+**Status: Complete (2026-11-03).** Delivered strict widget schemas and bounds, backend-owned lifecycle and idempotency, safe text/SVG rendering, demo-owned lifecycle simulation, Admin management, fixed Display placements, expiry cleanup, and protocol/widget documentation. Verification includes the full automated test suite, production build, responsive Admin browser checks, and independent specification/security/UI review.
+
 **Outcome:** agents/demo adapter can safely create, update, hide, and remove stable, owned widgets.
 
 ### Tasks
