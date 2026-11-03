@@ -3,6 +3,7 @@ import './display.css';
 import './auth/auth.css';
 import { resolveRoute } from './routes';
 import { renderDisplay } from './display/view';
+import { renderWidget } from './display/widgets';
 import { bindAdminEvents, renderAdmin, type AdminPage } from './admin/view';
 import { renderDisplayGate, renderOwnerGate } from './auth/view';
 import { type State } from './demo-state';
@@ -21,9 +22,23 @@ function render() {
   document.body.classList.toggle('display-mode', displayMode);
   if (!role || (!displayMode && role !== 'owner')) { app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
   if (!state) { app.textContent = 'Loading workspace…'; return; }
-  if (displayMode) { app.innerHTML = renderDisplay(state, demoMode, streamConnected); return; }
+  if (displayMode) { app.innerHTML = renderDisplay(state, demoMode, streamConnected); mountDisplayWidgets(); return; }
   app.innerHTML = renderAdmin(state, page, { demoMode, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
   bindAdminEvents(app, { page: next => { page = next; render(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, pair: pairDisplay, logout });
+}
+function mountDisplayWidgets() {
+  const now = Date.now(), visible = state!.widgets.map(widget => renderWidget(widget, now)).filter((item): item is HTMLElement => item !== null);
+  visible.sort((a, b) => {
+    const left = state!.widgets.find(w => w.id === a.dataset.widgetId), right = state!.widgets.find(w => w.id === b.dataset.widgetId);
+    return (left?.createdAt ?? 0) - (right?.createdAt ?? 0) || (left?.id ?? '').localeCompare(right?.id ?? '');
+  });
+  const shown = visible.slice(0, 12);
+  for (const element of shown) app.querySelector(`[data-placement="${state!.widgets.find(w => w.id === element.dataset.widgetId)?.placement}"]`)?.append(element);
+  const regions = [...app.querySelectorAll<HTMLElement>('.display-slot-region')];
+  regions.forEach(region => { region.hidden = region.childElementCount === 0; });
+  app.querySelector<HTMLElement>('.display-empty')!.hidden = visible.length !== 0;
+  const overflow = app.querySelector<HTMLElement>('.display-overflow')!;
+  overflow.hidden = visible.length <= 12; if (visible.length > 12) overflow.textContent = `+${visible.length - 12} more slots`;
 }
 function bindGate() {
   app.querySelector<HTMLButtonElement>('[data-auth-mode]')?.addEventListener('click', event => { authMode = (event.currentTarget as HTMLElement).dataset.authMode as 'setup' | 'login'; gateError = ''; render(); });
