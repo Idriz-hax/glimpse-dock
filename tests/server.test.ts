@@ -174,6 +174,30 @@ describe('backend', () => {
     expect((await removeSend()).json().revision).toBe(5);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().revision).toBe(5);
   });
+  it('lets the owner create, update, hide, and remove an agent-owned widget', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
+    const send = (requestId: string, type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId, type, payload } });
+    const widget = { version: 1, id: 'agent-owned', title: 'Agent widget', content: { kind: 'text', text: 'created' }, placement: 'primary', expiresAt: null };
+    expect((await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'agent-owned-create', type: 'widget.create', payload: { widget } } })).statusCode).toBe(200);
+    expect((await send('owner-update', 'widget.update', { id: 'agent-owned', title: 'Owner updated' })).statusCode).toBe(200);
+    expect((await send('owner-hide', 'widget.set-visibility', { id: 'agent-owned', visible: false })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: expect.any(String), title: 'Owner updated', visible: false });
+    expect((await send('owner-remove', 'widget.remove', { id: 'agent-owned' })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets).toEqual([]);
+  });
+  it('creates and updates Admin sample widgets as the owner principal', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const send = (requestId: string, type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId, type, payload } });
+    const sample = { version: 1, id: 'sample-text', title: 'Text sample', content: { kind: 'text', text: 'sample' }, placement: 'secondary', expiresAt: null };
+    expect((await send('sample-create', 'widget.create', { widget: sample })).statusCode).toBe(200);
+    expect((await send('sample-update', 'widget.update', { id: 'sample-text', title: 'Updated sample' })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: 'owner', title: 'Updated sample' });
+  });
   it('authorizes legacy metric updates through widget ownership', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
