@@ -23,14 +23,12 @@ class VoiceFrameProcessor extends AudioWorkletProcessor {
     const channel = inputs[0]?.[0];
     if (!channel || this.ended) return true;
     for (const sample of channel) {
-      if (this.outputCount >= 240_000) { this.ended = true; this.flush(); this.port.postMessage({ type: 'end' }); return true; }
       const position = this.outputCount * sampleRate / 16000;
       while (position <= this.inputCount) {
         const fraction = this.inputCount === 0 ? 0 : position - (this.inputCount - 1);
         const value = this.inputCount === 0 ? sample : this.previous + (sample - this.previous) * fraction;
         this.pending.push(value); this.outputCount++;
         if (this.pending.length === this.frameSize) this.flush();
-        if (this.outputCount >= 240_000) { this.ended = true; this.flush(); this.port.postMessage({ type: 'end' }); return true; }
         if (this.outputCount * sampleRate / 16000 > this.inputCount) break;
       }
       this.previous = sample; this.inputCount++;
