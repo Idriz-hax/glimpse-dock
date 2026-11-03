@@ -8,7 +8,10 @@ export type SampleKind = 'text' | 'status' | 'metric' | 'progress' | 'visual';
 export function bindAdminEvents(app: HTMLElement, handlers: { page: (page: AdminPage) => void; simulate: () => void; toggle: () => void; command: (value: string) => void; addWidget: () => void; reset: () => void; widgetAction?: (type: WidgetCommand, payload: { id: string; visible?: boolean }) => void; widgetSample?: (kind: SampleKind) => void; displayStyle?: (style: 'quiet' | 'ambient') => void; pair?: () => void; logout?: () => void }) {
   app.querySelectorAll<HTMLElement>('[data-page]').forEach(el => el.addEventListener('click', () => {
     const page = el.dataset.page;
-    if (page === 'overview' || page === 'widgets' || page === 'activity' || page === 'settings') handlers.page(page);
+    if (page === 'overview' || page === 'widgets' || page === 'activity' || page === 'settings') {
+      app.querySelector('#sidebar')?.classList.remove('mobile-open');
+      handlers.page(page);
+    }
   }));
   app.querySelector('#menu-toggle')?.addEventListener('click', () => app.querySelector('#sidebar')?.classList.toggle('mobile-open'));
   app.querySelector('#simulate')?.addEventListener('click', handlers.simulate);
@@ -36,7 +39,7 @@ export function bindAdminEvents(app: HTMLElement, handlers: { page: (page: Admin
 }
 const renderWidget = (w: Widget) => { const c = w.content; return c.kind === 'metric' ? `<article class="metric-card"><div class="metric-top"><span>${escapeHTML(c.label)}</span><span class="metric-icon purple">${icon('layers', 17)}</span></div><div class="metric-value">${escapeHTML(c.value)}</div><div class="metric-sub">${escapeHTML(c.caption ?? '')}</div></article>` : `<article class="metric-card"><div class="metric-top">${escapeHTML(w.title)}</div><div>${escapeHTML(c.kind === 'text' ? c.text : c.kind === 'progress' ? `${c.label}: ${c.value ?? '—'}` : c.kind === 'status' ? c.label : 'Visual widget')}</div></article>`; };
 const renderLogs = (state: State, count = 5) => state.logs.slice(0, count).map(log => `<div class="log-row"><div class="log-symbol ${['info','success','warning'].includes(log.level) ? log.level : 'info'}">${icon(log.level === 'success' ? 'check' : log.level === 'warning' ? 'bolt' : 'activity', 15)}</div><div class="log-body"><strong>${escapeHTML(log.title)}</strong><span>${escapeHTML(log.detail)}</span></div><time>${escapeHTML(log.time)}</time></div>`).join('');
-const link = () => `<a class="display-launch" href="/display">${icon('layers', 16)} Open visual display ↗</a>`;
+const link = () => `<a class="display-launch" href="/display" aria-label="Open visual display">${icon('layers', 16)}<span>Open visual display ↗</span></a>`;
 
 export function renderAdmin(state: State, page: AdminPage, options: { demoMode: boolean; pairing?: { status?: string; code?: string; error?: string; pending?: boolean } } = { demoMode: true }, now = Date.now()): string {
   const demo = options.demoMode;

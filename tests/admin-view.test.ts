@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { initialState } from '../src/demo-state';
-import { renderAdmin } from '../src/admin/view';
+import { bindAdminEvents, renderAdmin } from '../src/admin/view';
 
 describe('Admin view', () => {
   it('renders the supported demo command examples', () => {
@@ -52,5 +52,14 @@ describe('Admin view', () => {
   it('offers create/update sample controls for all five kinds', () => {
     const html = renderAdmin(initialState(), 'widgets', { demoMode: false });
     for (const kind of ['text', 'status', 'metric', 'progress', 'visual']) expect(html).toContain(`data-widget-sample="${kind}"`);
+  });
+  it('closes an open mobile sidebar when selecting a page', () => {
+    let click: (() => void) | undefined, removed = '', selected = '';
+    const nav = { dataset: { page: 'widgets' }, addEventListener: (_: string, handler: () => void) => { click = handler; } };
+    const sidebar = { classList: { remove: (name: string) => { removed = name; } } };
+    const app = { querySelectorAll: (selector: string) => selector === '[data-page]' ? [nav] : [], querySelector: (selector: string) => selector === '#sidebar' ? sidebar : null } as unknown as HTMLElement;
+    bindAdminEvents(app, { page: page => { selected = page; }, simulate() {}, toggle() {}, command() {}, addWidget() {}, reset() {} });
+    click?.();
+    expect(removed).toBe('mobile-open'); expect(selected).toBe('widgets');
   });
 });
