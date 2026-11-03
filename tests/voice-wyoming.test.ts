@@ -21,6 +21,8 @@ function fake(handler: (event: any, send: (event: unknown, payload?: Buffer) => 
           handler(header, send, socket);
         } else if (input.length >= expected) {
           const header = (socket as any).nextHeader;
+          const dl = header.data_length ?? 0;
+          if (dl) header.data = { ...(header.data ?? {}), ...JSON.parse(input.subarray(0, dl).toString()) };
           input = input.subarray(expected); expected = 0;
           handler(header, send, socket);
         } else return;
@@ -57,17 +59,20 @@ describe('WyomingVoiceClient', () => {
     expect(await c.transcribe(Buffer.from([0, 0]), new AbortController().signal)).toBe('hello');
     expect(await c.synthesize('hello', 'voice', new AbortController().signal)).toEqual({ pcm: Buffer.from([1, 2]), rate: 22050, width: 2, channels: 1 });
   });
-  it('selects the advertised wake model and stops feeding when detection arrives', async () => {
-    let chunks = 0;
+  it('detects wake after sending model selection and audio frames, then closes the iterator', async () => {
+    const received: any[] = [];
     const uri = await fake((e, send) => {
       if (e.type === 'describe') send({ type: 'info', data: { wake: [{ models: [{ name: 'hey_hermes' }] }] } });
-      if (e.type === 'audio-start') send({ type: 'detection', data: { name: 'hey_hermes', timestamp: 123 } });
-      if (e.type === 'audio-chunk') chunks++;
+      received.push(e);
+      if (e.type === 'audio-chunk') send({ type: 'detection', data: { name: 'hey_hermes', timestamp: 123 } });
     });
     let callback: string | undefined; let iteratorClosed = false;
-    const audio = { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<Buffer>>(() => {}), return: async () => { iteratorClosed = true; return { done: true, value: undefined }; } }) };
+    let first = true;
+    const audio = { [Symbol.asyncIterator]: () => ({ next: () => first ? (first = false, Promise.resolve({ done: false as const, value: Buffer.from([1, 2]) })) : new Promise<IteratorResult<Buffer>>(() => {}), return: async () => { iteratorClosed = true; return { done: true as const, value: undefined }; } }) };
     const result = await new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).detectWake(audio, new AbortController().signal, name => { callback = name; });
-    expect(result).toBe('hey_hermes'); expect(callback).toBe('hey_hermes'); expect(iteratorClosed).toBe(true); expect(chunks).toBe(0);
+    expect(result).toBe('hey_hermes'); expect(callback).toBe('hey_hermes'); expect(iteratorClosed).toBe(true);
+    expect(received.map(e => e.type)).toEqual(['describe', 'detect', 'audio-start', 'audio-chunk']);
+    expect(received.find(e => e.type === 'detect').data).toEqual({ names: ['hey_hermes'] });
   });
   it('rejects oversized transcriptions and invalid declared lengths', async () => {
     const uri = await fake((e, send) => {});
