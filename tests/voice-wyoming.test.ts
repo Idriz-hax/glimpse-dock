@@ -74,6 +74,13 @@ describe('WyomingVoiceClient', () => {
     expect(received.map(e => e.type)).toEqual(['describe', 'detect', 'audio-start', 'audio-chunk']);
     expect(received.find(e => e.type === 'detect').data).toEqual({ names: ['hey_hermes'] });
   });
+  it('stops a pending audio iterator when the service reports not-detected', async () => {
+    const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { wake: [{ name: 'hey_hermes' }] } }); if (e.type === 'audio-start') send({ type: 'not-detected' }); });
+    let closed = false;
+    const audio = { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<Buffer>>(() => {}), return: async () => { closed = true; return { done: true as const, value: undefined }; } }) };
+    await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).detectWake(audio, new AbortController().signal, () => {})).resolves.toBeUndefined();
+    expect(closed).toBe(true);
+  });
   it('rejects oversized transcriptions and invalid declared lengths', async () => {
     const uri = await fake((e, send) => {});
     const client = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri });
@@ -90,6 +97,27 @@ describe('WyomingVoiceClient', () => {
     bad.listen(0, '127.0.0.1'); servers.push(bad);
     const badUri = await new Promise<string>(resolve => bad.once('listening', () => resolve(`tcp://127.0.0.1:${(bad.address() as net.AddressInfo).port}`)));
     await expect(new WyomingVoiceClient({ wake: badUri, stt: badUri, tts: badUri }).transcribe(Buffer.from([0]), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming length/);
+  });
+  it('rejects malformed JSON header shapes safely', async () => {
+    for (const line of ['null', '[]', '{"type":3}', '{}']) {
+      const bad = net.createServer(socket => socket.once('data', () => socket.write(`${line}\n`)));
+      bad.listen(0, '127.0.0.1'); servers.push(bad);
+      const uri = await new Promise<string>(resolve => bad.once('listening', () => resolve(`tcp://127.0.0.1:${(bad.address() as net.AddressInfo).port}`)));
+      await expect(new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(Buffer.from([0]), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming header/);
+    }
+  });
+  it('rejects already-aborted calls before connecting', async () => {
+    const controller = new AbortController(); controller.abort();
+    await expect(new WyomingVoiceClient({ wake: 'tcp://127.0.0.1:1', stt: 'tcp://127.0.0.1:1', tts: 'tcp://127.0.0.1:1' }).transcribe(Buffer.from([1]), controller.signal)).rejects.toThrow(/aborted/);
+  });
+  it('does not write additional audio frames after abort during wake setup', async () => {
+    const controller = new AbortController(); let started!: () => void;
+    const audioStarted = new Promise<void>(resolve => { started = resolve; });
+    const uri = await fake((e, send) => { if (e.type === 'describe') send({ type: 'info', data: { wake: [{ name: 'hey_hermes' }] } }); if (e.type === 'audio-start') { started(); controller.abort(); } });
+    const audio = { async *[Symbol.asyncIterator]() { yield Buffer.from([1, 2]); yield Buffer.from([3, 4]); } };
+    const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).detectWake(audio, controller.signal, () => {});
+    await audioStarted;
+    await expect(pending).rejects.toThrow(/aborted/);
   });
   it('times out an unresponsive Wyoming service', async () => {
     const originalTimeout = net.Socket.prototype.setTimeout;

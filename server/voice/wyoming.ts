@@ -54,7 +54,7 @@ export class WyomingVoiceClient {
         while (true) {
           const e = await next();
           if (e.type === 'detection') { detected = typeof e.data?.name === 'string' ? e.data.name : model.name; stopFeeding(); onDetection(detected, Number(e.data?.timestamp ?? Date.now())); send({ type: 'audio-stop' }); void iterator.return?.(); void feeding; return detected; }
-          if (e.type === 'not-detected') { send({ type: 'audio-stop' }); await feeding; return; }
+          if (e.type === 'not-detected') { stopFeeding(); void iterator.return?.(); send({ type: 'audio-stop' }); await feeding; return; }
         }
        } finally { if (detected) { stopFeeding(); void iterator.return?.(); } void feeding; }
     });
@@ -84,6 +84,7 @@ export class WyomingVoiceClient {
     return this.run(service, AbortSignal.timeout(TIMEOUT_MS), async (send, next) => { send({ type: 'describe' }); while (true) { const e = await next(); if (e.type === 'info') return e.data ?? {}; } });
   }
   private async run<T>(service: 'wake' | 'stt' | 'tts', signal: AbortSignal, operation: (send: (event: object, payload?: Buffer) => void, next: () => Promise<WyomingEvent>) => Promise<T>): Promise<T> {
+    if (signal.aborted) throw new Error('Wyoming operation aborted');
     const socket = net.createConnection(this.services[service]);
     socket.setTimeout(TIMEOUT_MS, () => socket.destroy(new Error('Wyoming operation timed out')));
     const abort = () => socket.destroy(new Error('Wyoming operation aborted'));
@@ -95,6 +96,7 @@ export class WyomingVoiceClient {
       const { data, ...rest } = event as any; const dataBytes = data === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(data)); const bytes = payload ?? Buffer.alloc(0);
       if (dataBytes.length > MAX_DATA || bytes.length > MAX_PAYLOAD) throw new Error('Wyoming message too large');
       const h = { ...rest, ...(data === undefined ? {} : { data_length: dataBytes.length }), ...(bytes.length ? { payload_length: bytes.length } : {}), version: '1.0' };
+      if (signal.aborted) throw new Error('Wyoming operation aborted');
       socket.write(Buffer.concat([Buffer.from(JSON.stringify(h) + '\n'), dataBytes, bytes]));
     };
     socket.on('data', chunk => {
@@ -105,6 +107,7 @@ export class WyomingVoiceClient {
           const i = buffer.indexOf(10); if (i < 0) { if (buffer.length > MAX_HEADER) socket.destroy(new Error('Wyoming header too large')); return; }
           if (i > MAX_HEADER) { socket.destroy(new Error('Wyoming header too large')); return; }
           try { header = JSON.parse(buffer.subarray(0, i).toString()); } catch { socket.destroy(new Error('Invalid Wyoming header')); return; }
+          if (!header || typeof header !== 'object' || Array.isArray(header) || typeof header.type !== 'string') { socket.destroy(new Error('Invalid Wyoming header')); return; }
           buffer = buffer.subarray(i + 1);
           for (const key of ['data_length', 'payload_length']) if (header[key] !== undefined && (!Number.isSafeInteger(header[key]) || header[key] < 0)) { socket.destroy(new Error('Invalid Wyoming length')); return; }
           if ((header.data_length ?? 0) > MAX_DATA || (header.payload_length ?? 0) > MAX_PAYLOAD) { socket.destroy(new Error('Wyoming message too large')); return; }
