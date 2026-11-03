@@ -50,6 +50,8 @@ export class VoiceSession {
   private closed = false;
   constructor(private readonly options: VoiceSessionOptions) {}
 
+  get hasActiveRun(): boolean { return this.remoteActive; }
+
   message(data: unknown, isBinary: boolean): void {
     if (this.closed) return;
     if (isBinary) {
@@ -93,7 +95,7 @@ export class VoiceSession {
     this.clearCaptureTimer();
     this.currentQueue?.discard(); this.currentQueue = undefined;
     this.wakeQueue?.discard(); this.wakeQueue = undefined;
-    this.wakeController?.abort(); this.turnController?.abort(); this.remoteController?.abort();
+    this.wakeController?.abort(); this.turnController?.abort();
     this.stopRemote();
     this.phase = 'closed';
   }

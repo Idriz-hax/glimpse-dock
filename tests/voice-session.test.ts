@@ -24,11 +24,12 @@ function harness(transcript = 'hello') {
   const eventsDone = deferred();
   const eventsStarted = deferred();
   let terminal!: (event: any) => void;
+  const remoteSignals: AbortSignal[] = [];
   const hermes = {
     startRun: vi.fn(async () => ({ runId: 'private-run-id' })),
     stopRun: vi.fn(async () => ({ status: 'stopping' })),
-    readRunEvents: vi.fn(async (_id: string, _signal: AbortSignal, onEvent: (event: any) => void) => {
-      terminal = onEvent; eventsStarted.resolve(); await eventsDone.promise;
+    readRunEvents: vi.fn(async (_id: string, signal: AbortSignal, onEvent: (event: any) => void) => {
+      terminal = onEvent; remoteSignals.push(signal); eventsStarted.resolve(); await eventsDone.promise;
     }),
   };
   let detectorCount = 0;
@@ -43,7 +44,7 @@ function harness(transcript = 'hello') {
   const session = new VoiceSession({ socket, hermes, wyoming, sessionId: 'private-session', settings: { wakeModel: 'hey', voice: 'voice' } });
   const message = (value: string | Buffer, binary = false) => session.message(value, binary);
   const finishCapture = async () => { await vi.advanceTimersByTimeAsync(15_000); await flush(); };
-  return { session, socket, sent, hermes, wyoming, consumed, transcribeSignals, wakeStarted, wakeDone, triggerWake: (name = 'hey') => detection(name), emit: (event: any) => terminal(event), eventsDone, eventsStarted, message, finishCapture, get detectorCount() { return detectorCount; } };
+  return { session, socket, sent, hermes, wyoming, consumed, transcribeSignals, remoteSignals, wakeStarted, wakeDone, triggerWake: (name = 'hey') => detection(name), emit: (event: any) => terminal(event), eventsDone, eventsStarted, message, finishCapture, get detectorCount() { return detectorCount; } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -160,6 +161,18 @@ describe('VoiceSession', () => {
     await h.finishCapture();
     expect(h.hermes.startRun).toHaveBeenCalledTimes(2);
     h.session.close();
+  });
+
+  it('keeps remote terminal monitoring alive after the owner socket closes', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(5), true); await h.finishCapture(); await h.eventsStarted.promise;
+    expect(h.session.hasActiveRun).toBe(true);
+    h.session.close();
+    expect(h.remoteSignals[0]?.aborted).toBe(false);
+    expect(h.hermes.stopRun).toHaveBeenCalledWith('private-run-id');
+    h.emit({ type: 'run.cancelled', status: 'cancelled' });
+    expect(h.session.hasActiveRun).toBe(false);
   });
 
   it('ignores a duplicate terminal callback from an older run', async () => {
