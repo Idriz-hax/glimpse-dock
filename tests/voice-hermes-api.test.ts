@@ -24,11 +24,11 @@ describe('HermesApiClient', () => {
     expect(JSON.parse(String(init.body))).toEqual({ input: 'hello', session_id: 'session-1' });
   });
 
-  it('parses allowlisted SSE events and ignores unknown fields', async () => {
+  it('parses documented SSE events and ignores unknown fields', async () => {
     const chunks = [
       'event: subagent.', 'start\ndata: {"name":"worker","private":"ignore"}\n',
-      '\nevent: message.delta\ndata: {"delta":', '"Hi","private":"ignore"}\n\nevent: run.completed\n',
-      'data: {"status":"completed"}\n\n',
+      '\nevent: message.delta\ndata: {"text":', '"Hi","private":"ignore"}\n\nevent: run.completed\n',
+      'data: {"status":"completed","output":"Done"}\n\n',
     ];
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -41,10 +41,35 @@ describe('HermesApiClient', () => {
     const events: unknown[] = [];
     await client.readRunEvents('run-1', new AbortController().signal, event => events.push(event));
     expect(events).toEqual([
-      { type: 'subagent.start', name: 'worker' },
-      { type: 'message.delta', delta: 'Hi' },
-      { type: 'run.completed', status: 'completed' },
+      { type: 'subagent.start', subagentId: '' },
+      { type: 'message.delta', text: 'Hi' },
+      { type: 'run.completed', status: 'completed', output: 'Done' },
     ]);
+  });
+
+
+  it('rejects non-terminal EOF and accepts failed terminal', async () => {
+    const stream = (text: string) => new Response(text, { headers: { 'content-type': 'text/event-stream' } });
+    const eof = new HermesApiClient('http://127.0.0.1', 'key', vi.fn(async () => stream('event: message.delta\ndata: {\"text\":\"x\"}\n\n')) as typeof fetch);
+    await expect(eof.readRunEvents('r', new AbortController().signal, () => {})).rejects.toThrow('ended before run completed');
+    const failed = new HermesApiClient('http://127.0.0.1', 'key', vi.fn(async () => stream('event: run.failed\ndata: {\"status\":\"failed\"}\n\n')) as typeof fetch);
+    const events: unknown[] = [];
+    await failed.readRunEvents('r', new AbortController().signal, event => events.push(event));
+    expect(events).toEqual([{ type: 'run.failed', status: 'failed' }]);
+  });
+
+  it('stops a run with authenticated bodyless POST and forwards abort signals', async () => {
+    const fetch = vi.fn(async () => response('{"status":"stopping"}'));
+    const client = new HermesApiClient('http://127.0.0.1', 'key', fetch as typeof globalThis.fetch);
+    const controller = new AbortController();
+    await expect(client.stopRun('run/one', controller.signal)).resolves.toEqual({ status: 'stopping' });
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1/v1/runs/run%2Fone/stop', expect.objectContaining({ method: 'POST', signal: controller.signal, headers: expect.objectContaining({ Authorization: 'Bearer key' }) }));
+    const sessionFetch = vi.fn(async () => response('{"session_id":"s"}'));
+    await new HermesApiClient('http://127.0.0.1', 'key', sessionFetch as typeof fetch).createSession(controller.signal);
+    expect(sessionFetch.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+    const runFetch = vi.fn(async () => response('{"run_id":"r"}'));
+    await new HermesApiClient('http://127.0.0.1', 'key', runFetch as typeof fetch).startRun('s', 'x', 'i', controller.signal);
+    expect(runFetch.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
   });
 
   it('sanitizes HTTP and malformed JSON/SSE failures', async () => {
@@ -57,7 +82,7 @@ describe('HermesApiClient', () => {
   });
 
   it('passes abort signals to fetch', async () => {
-    const fetch = vi.fn(async () => response(''));
+    const fetch = vi.fn(async () => response('event: run.completed\ndata: {"status":"completed"}\n\n'));
     const client = new HermesApiClient('http://127.0.0.1:8642', 'key', fetch as typeof globalThis.fetch);
     const controller = new AbortController();
     await client.readRunEvents('run', controller.signal, () => {});
