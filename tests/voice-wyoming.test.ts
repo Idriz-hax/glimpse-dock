@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import net from 'node:net';
 import { WyomingVoiceClient } from '../server/voice/wyoming.js';
 
@@ -90,6 +90,28 @@ describe('WyomingVoiceClient', () => {
     bad.listen(0, '127.0.0.1'); servers.push(bad);
     const badUri = await new Promise<string>(resolve => bad.once('listening', () => resolve(`tcp://127.0.0.1:${(bad.address() as net.AddressInfo).port}`)));
     await expect(new WyomingVoiceClient({ wake: badUri, stt: badUri, tts: badUri }).transcribe(Buffer.from([0]), new AbortController().signal)).rejects.toThrow(/Invalid Wyoming length/);
+  });
+  it('times out an unresponsive Wyoming service', async () => {
+    const originalTimeout = net.Socket.prototype.setTimeout;
+    vi.spyOn(net.Socket.prototype, 'setTimeout').mockImplementation(function (this: net.Socket, _timeout: number, callback?: () => void) {
+      return originalTimeout.call(this, 100, callback);
+    });
+    let requestReceived!: () => void;
+    const received = new Promise<void>(resolve => { requestReceived = resolve; });
+    const uri = await fake(e => { if (e.type === 'audio-stop') requestReceived(); });
+    try {
+      const pending = new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(Buffer.from([0]), new AbortController().signal);
+      await received;
+      await expect(pending).rejects.toThrow(/timed out/);
+    } finally { vi.restoreAllMocks(); }
+  });
+  it('does not log raw audio or recognized transcripts', async () => {
+    const spies = [vi.spyOn(console, 'log'), vi.spyOn(console, 'info'), vi.spyOn(console, 'warn'), vi.spyOn(console, 'error')];
+    try {
+      const uri = await fake((e, send) => { if (e.type === 'audio-stop') send({ type: 'transcript', data: { text: 'private transcript' } }); });
+      await new WyomingVoiceClient({ wake: uri, stt: uri, tts: uri }).transcribe(Buffer.from('private audio'), new AbortController().signal);
+      expect(spies.flatMap(spy => spy.mock.calls.flat()).join(' ')).not.toMatch(/private audio|private transcript/);
+    } finally { spies.forEach(spy => spy.mockRestore()); }
   });
   it('merges header data with JSON data bytes', async () => {
     const bytes = Buffer.from('{"extra":true}');
