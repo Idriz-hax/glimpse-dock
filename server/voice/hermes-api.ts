@@ -40,6 +40,8 @@ export class HermesApiClient {
     let eventName = '';
     let data = '';
     let total = 0;
+    const abort = () => { void reader.cancel(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
     const dispatch = () => {
       if (!data) { eventName = ''; return; }
       let value: unknown;
@@ -59,6 +61,7 @@ export class HermesApiClient {
     try {
       while (true) {
         const { value, done } = await reader.read();
+        if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
         if (done) break;
         total += value.byteLength;
         if (total > MAX_RESPONSE_BYTES) throw new Error('Hermes event stream too large');
@@ -77,7 +80,7 @@ export class HermesApiClient {
         }
       }
       if (buffer || data) dispatch();
-    } finally { reader.releaseLock(); }
+    } finally { signal.removeEventListener('abort', abort); reader.releaseLock(); }
   }
 
   private async requestJson(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {

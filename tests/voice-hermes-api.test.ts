@@ -25,8 +25,18 @@ describe('HermesApiClient', () => {
   });
 
   it('parses allowlisted SSE events and ignores unknown fields', async () => {
-    const stream = 'event: subagent.start\ndata: {"name":"worker","private":"ignore"}\n\nevent: message.delta\ndata: {"delta":"Hi","private":"ignore"}\n\nevent: run.completed\ndata: {"status":"completed"}\n\n';
-    const fetch = vi.fn(async () => response(stream, 200, { 'content-type': 'text/event-stream' }));
+    const chunks = [
+      'event: subagent.', 'start\ndata: {"name":"worker","private":"ignore"}\n',
+      '\nevent: message.delta\ndata: {"delta":', '"Hi","private":"ignore"}\n\nevent: run.completed\n',
+      'data: {"status":"completed"}\n\n',
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+        controller.close();
+      },
+    });
+    const fetch = vi.fn(async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
     const client = new HermesApiClient('http://127.0.0.1:8642', 'key', fetch as typeof globalThis.fetch);
     const events: unknown[] = [];
     await client.readRunEvents('run-1', new AbortController().signal, event => events.push(event));
@@ -52,5 +62,19 @@ describe('HermesApiClient', () => {
     const controller = new AbortController();
     await client.readRunEvents('run', controller.signal, () => {});
     expect(fetch.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+  });
+
+  it('rejects promptly when aborted while waiting for the next stream chunk', async () => {
+    let reading!: () => void;
+    const isReading = new Promise<void>(resolve => { reading = resolve; });
+    const body = new ReadableStream<Uint8Array>({
+      pull() { reading(); },
+    });
+    const client = new HermesApiClient('http://127.0.0.1:8642', 'key', vi.fn(async () => new Response(body)) as typeof fetch);
+    const controller = new AbortController();
+    const pending = client.readRunEvents('run', controller.signal, () => {});
+    await isReading;
+    controller.abort();
+    await expect(pending).rejects.toThrow();
   });
 });
