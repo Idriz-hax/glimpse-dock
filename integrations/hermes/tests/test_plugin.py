@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import threading
@@ -28,6 +29,7 @@ class PluginTests(unittest.TestCase):
         with patch.dict(os.environ, {"GLIMPSE_DOCK_AGENT_TOKEN": "test-token"}):
             with patch("glimpse_dock.GlimpseDockClient") as client_type:
                 client = client_type.return_value
+                client.send_widget.return_value = {"ok": True}
                 register(ctx)
         self.assertEqual(set(ctx.hooks), set(_HOOKS))
         self.assertEqual(len(ctx.tools), 1)
@@ -40,7 +42,7 @@ class PluginTests(unittest.TestCase):
         client.send_activity.assert_not_called()
         self.assertIsNone(ctx.hooks["pre_llm_call"](prompt="sensitive"))
         client.send_activity.assert_called_once_with("task.update", {"task": "Hermes is processing a turn"})
-        self.assertFalse(handler({"action": "remove", "id": "x"})["ok"] is False)
+        self.assertTrue(json.loads(handler({"action": "remove", "id": "x"}))["ok"])
 
     def test_missing_token_registers_and_callbacks_fail_open(self):
         ctx = Context()
@@ -48,8 +50,17 @@ class PluginTests(unittest.TestCase):
             register(ctx)
         self.assertEqual(set(ctx.hooks), set(_HOOKS))
         self.assertIsNone(ctx.hooks["on_stream_start"]())
-        self.assertEqual(ctx.tools[0][3]({"action": "remove", "id": "x"}),
+        self.assertEqual(json.loads(ctx.tools[0][3]({"action": "remove", "id": "x"})),
                          {"ok": False, "error": "CONFIGURATION"})
+
+    def test_client_failure_returns_json_command_failed(self):
+        ctx = Context()
+        with patch.dict(os.environ, {"GLIMPSE_DOCK_AGENT_TOKEN": "token"}), \
+                patch("glimpse_dock.GlimpseDockClient") as client_type:
+            client_type.return_value.send_widget.side_effect = RuntimeError("failure")
+            register(ctx)
+        result = json.loads(ctx.tools[0][3]({"action": "remove", "id": "x"}))
+        self.assertEqual(result, {"ok": False, "error": "COMMAND_FAILED"})
 
     def test_entire_callback_sequence_is_serialized(self):
         ctx = Context()

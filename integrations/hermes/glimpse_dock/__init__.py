@@ -1,5 +1,6 @@
 """Hermes plugin entry point for Glimpse Dock."""
 
+import json
 import logging
 import os
 import threading
@@ -84,10 +85,10 @@ def register(ctx):
 
     def widget_handler(params):
         if client is None:
-            return {"ok": False, "error": "CONFIGURATION"}
+            return json.dumps({"ok": False, "error": "CONFIGURATION"}, default=str)
         try:
-            return handle_widget(params, client)
+            return json.dumps(handle_widget(params, client), default=str)
         except Exception:
-            return {"ok": False, "error": "COMMAND_FAILED"}
+            return json.dumps({"ok": False, "error": "COMMAND_FAILED"}, default=str)
 
     ctx.register_tool("glimpse_widget", "glimpse_dock", _WIDGET_SCHEMA, widget_handler)
