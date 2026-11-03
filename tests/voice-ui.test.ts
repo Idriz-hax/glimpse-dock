@@ -59,6 +59,7 @@ describe('owner voice controls', () => {
     expect(socket.sent).toContain(JSON.stringify({ type: 'pause' })); expect(socket.sent).toContain(JSON.stringify({ type: 'resume' })); expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
     worklet.port.onmessage?.({ data: { type: 'audio', pcm: new Int16Array(1600) } });
     expect((socket.sent.find(item => item instanceof ArrayBuffer) as ArrayBuffer).byteLength).toBe(3200);
+    socket.receive({ type: 'state', phase: 'capturing', turn: 2 });
     socket.receive({ type: 'transcript', text: '<img src=x>', turn: 2 }); socket.receive({ type: 'transcript', text: 'stale', turn: 1 });
     expect(els['[data-transcript]'].children[0].textContent).toBe('You: <img src=x>'); expect(els['[data-transcript]'].children).toHaveLength(1);
     socket.receive({ type: 'tts-start', rate: 16000, width: 2, channels: 1, bytes: 2, turn: 2 }); socket.receive(new Int16Array([123]).buffer);
@@ -66,6 +67,17 @@ describe('owner voice controls', () => {
     expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'playback-ended', turn: 2 }));
     socket.receive({ type: 'state', phase: 'wake', turn: 3 }); oldSource.onended?.();
     expect(socket.sent.filter(item => item === JSON.stringify({ type: 'playback-ended', turn: 2 }))).toHaveLength(1);
+    socket.receive({ type: 'state', phase: 'paused', turn: null });
+    socket.receive({ type: 'transcript', text: 'late old turn', turn: 3 });
+    expect(els['[data-transcript]'].children).toHaveLength(1);
+    socket.receive({ type: 'state', phase: 'capturing', turn: 4 });
+    socket.receive({ type: 'transcript', text: 'new turn', turn: 4 });
+    expect(els['[data-transcript]'].children[1].textContent).toBe('You: new turn');
+    socket.receive({ type: 'error', code: 'VOICE_UNAVAILABLE', turn: null });
+    expect(els['[data-voice-error]'].textContent).toContain('Local speech service is unavailable');
+    els['[data-voice-error]'].textContent = '';
+    socket.receive({ type: 'error', code: 'STALE', turn: 3 });
+    expect(els['[data-voice-error]'].textContent).toBe('');
     cleanup(); expect(track.stop).toHaveBeenCalled();
   });
 });

@@ -1,24 +1,28 @@
 import workletUrl from './voice-worklet.ts?worker&url';
 
 type VoiceEvent =
-  | { type: 'state'; phase: 'paused' | 'wake' | 'capturing' | 'transcribing' | 'running' | 'speaking'; turn: number }
+  | { type: 'state'; phase: 'paused' | 'wake' | 'capturing' | 'transcribing' | 'running' | 'speaking'; turn: number | null }
   | { type: 'wake'; name: string; turn: number }
   | { type: 'transcript' | 'assistant.delta'; text: string; turn: number }
   | { type: 'subagent'; action: 'start' | 'complete'; subagentId: string; turn: number }
   | { type: 'tts-start'; rate: number; width: number; channels: number; bytes: number; turn: number }
   | { type: 'tts-end'; turn: number }
-  | { type: 'error'; code: string; turn: number };
+  | { type: 'error'; code: string; turn: number | null };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 function parseEvent(value: unknown): VoiceEvent | null {
-  if (!isRecord(value) || !Number.isSafeInteger(value.turn) || (value.turn as number) < 0) return null;
-  const turn = value.turn as number;
-  if (value.type === 'state' && ['paused', 'wake', 'capturing', 'transcribing', 'running', 'speaking'].includes(String(value.phase))) return { type: 'state', phase: value.phase as Extract<VoiceEvent, { type: 'state' }>['phase'], turn };
-  if (value.type === 'wake' && typeof value.name === 'string') return { type: 'wake', name: value.name, turn };
-  if ((value.type === 'transcript' || value.type === 'assistant.delta') && typeof value.text === 'string') return { type: value.type, text: value.text, turn };
-  if (value.type === 'subagent' && (value.action === 'start' || value.action === 'complete') && typeof value.subagentId === 'string') return { type: 'subagent', action: value.action, subagentId: value.subagentId, turn };
-  if (value.type === 'tts-start' && [value.rate, value.width, value.channels, value.bytes].every(Number.isSafeInteger) && (value.bytes as number) > 0 && (value.bytes as number) <= 8 * 1024 * 1024) return { type: 'tts-start', rate: value.rate as number, width: value.width as number, channels: value.channels as number, bytes: value.bytes as number, turn };
-  if (value.type === 'tts-end' || value.type === 'error' && typeof value.code === 'string') return value.type === 'error' ? { type: 'error', code: value.code as string, turn } : { type: 'tts-end', turn };
+  if (!isRecord(value)) return null;
+  const turn = value.turn;
+  const numericTurn = Number.isSafeInteger(turn) && (turn as number) >= 0 ? turn as number : null;
+  if (value.type === 'state' && (numericTurn !== null || turn === null) && ['paused', 'wake', 'capturing', 'transcribing', 'running', 'speaking'].includes(String(value.phase))) return { type: 'state', phase: value.phase as Extract<VoiceEvent, { type: 'state' }>['phase'], turn: numericTurn };
+  if (numericTurn === null) return value.type === 'error' && turn === null && typeof value.code === 'string' ? { type: 'error', code: value.code, turn: null } : null;
+  const activeTurn = numericTurn;
+  if (value.type === 'wake' && typeof value.name === 'string') return { type: 'wake', name: value.name, turn: activeTurn };
+  if ((value.type === 'transcript' || value.type === 'assistant.delta') && typeof value.text === 'string') return { type: value.type, text: value.text, turn: activeTurn };
+  if (value.type === 'subagent' && (value.action === 'start' || value.action === 'complete') && typeof value.subagentId === 'string') return { type: 'subagent', action: value.action, subagentId: value.subagentId, turn: activeTurn };
+  if (value.type === 'tts-start' && [value.rate, value.width, value.channels, value.bytes].every(Number.isSafeInteger) && (value.bytes as number) > 0 && (value.bytes as number) <= 8 * 1024 * 1024) return { type: 'tts-start', rate: value.rate as number, width: value.width as number, channels: value.channels as number, bytes: value.bytes as number, turn: activeTurn };
+  if (value.type === 'tts-end') return { type: 'tts-end', turn: activeTurn };
+  if (value.type === 'error' && typeof value.code === 'string') return { type: 'error', code: value.code, turn: activeTurn };
   return null;
 }
 
@@ -27,7 +31,7 @@ export function mountVoice(root: ParentNode): () => void {
   const enable = root.querySelector<HTMLButtonElement>('[data-voice-enable]'), manual = root.querySelector<HTMLButtonElement>('[data-voice-manual]'), pause = root.querySelector<HTMLButtonElement>('[data-voice-pause]'), mute = root.querySelector<HTMLButtonElement>('[data-voice-mute]'), stop = root.querySelector<HTMLButtonElement>('[data-voice-stop]');
   if (!status || !error || !transcript || !subagents || !enable || !manual || !pause || !mute || !stop) return () => {};
   let socket: WebSocket | undefined, stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, processor: AudioWorkletNode | undefined, silent: GainNode | undefined, playback: AudioBufferSourceNode | undefined;
-  let paused = false, muted = false, currentTurn = 0, tts: Extract<VoiceEvent, { type: 'tts-start' }> | undefined, ttsBytes: ArrayBuffer | undefined;
+  let paused = false, muted = false, currentTurn: number | null = null, tts: Extract<VoiceEvent, { type: 'tts-start' }> | undefined, ttsBytes: ArrayBuffer | undefined;
   const roster = new Map<string, 'active' | 'complete'>();
   const announce = (text: string) => { status.textContent = text; };
   const addLine = (who: string, text: string) => { const line = document.createElement('p'); line.textContent = `${who}: ${text}`; transcript.append(line); };
@@ -46,17 +50,19 @@ export function mountVoice(root: ParentNode): () => void {
     await context.resume(); playback.start(); announce('Hermes is speaking');
   };
   const onEvent = (event: VoiceEvent) => {
-    if (event.turn < currentTurn) return;
-    if (event.turn > currentTurn) stopPlayback();
-    currentTurn = event.turn;
-    if (event.type === 'state') { announce(event.phase === 'wake' ? 'Listening for Hey Hermes' : event.phase === 'paused' ? 'Listening paused' : event.phase === 'speaking' ? 'Hermes is speaking' : `Voice ${event.phase}`); }
+    if (event.type === 'state') {
+      if (event.turn === null) { stopPlayback(); currentTurn = null; }
+      else { if (currentTurn !== null && event.turn < currentTurn) return; if (currentTurn === null || event.turn > currentTurn) stopPlayback(); currentTurn = event.turn; }
+      announce(event.phase === 'wake' ? 'Listening for Hey Hermes' : event.phase === 'paused' ? 'Listening paused' : event.phase === 'speaking' ? 'Hermes is speaking' : `Voice ${event.phase}`);
+    }
+    else if (event.type === 'error') { if (event.turn !== null && (currentTurn === null || event.turn !== currentTurn)) return; stopPlayback(); error.textContent = event.code === 'VOICE_UNAVAILABLE' ? 'Local speech service is unavailable. Check that it is running.' : 'Voice request failed. You can try again.'; announce('Voice request failed'); }
+    else if (event.turn === null || currentTurn === null || event.turn !== currentTurn) return;
     else if (event.type === 'wake') announce(`${event.name} heard · listening`);
     else if (event.type === 'transcript') addLine('You', event.text);
     else if (event.type === 'assistant.delta') addLine('Hermes', event.text);
     else if (event.type === 'subagent') { roster.set(event.subagentId, event.action === 'start' ? 'active' : 'complete'); subagents.replaceChildren(...Array.from(roster, ([id, state]) => { const item = document.createElement('p'); item.dataset.subagentId = id; item.textContent = `${id} · ${state}`; return item; })); }
     else if (event.type === 'tts-start') { if (event.bytes < 0 || event.bytes > 8 * 1024 * 1024 || tts) return failProtocol(); tts = event; ttsBytes = undefined; }
     else if (event.type === 'tts-end') { if (!tts || event.turn !== tts.turn || !ttsBytes) return failProtocol(); tts = undefined; ttsBytes = undefined; }
-    else if (event.type === 'error') { stopPlayback(); error.textContent = event.code === 'service-unavailable' ? 'Local speech service is unavailable. Check that it is running.' : 'Voice request failed. You can try again.'; announce('Voice request failed'); }
   };
   const capture = async () => {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
