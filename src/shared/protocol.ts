@@ -108,7 +108,7 @@ export const StateMessageSchema = z.object({
 export const ErrorResponseSchema = z.object({
   v: z.literal(1),
   error: z.object({
-    code: z.enum(['UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'INVALID_COMMAND', 'INVALID_INPUT', 'CONFLICT', 'RATE_LIMITED', 'PERSISTENCE_FAILED', 'UNAVAILABLE']),
+    code: z.enum(['UNAUTHENTICATED', 'FORBIDDEN', 'PAIRING_INVALID', 'PAIRING_EXPIRED', 'NOT_FOUND', 'INVALID_COMMAND', 'INVALID_INPUT', 'CONFLICT', 'RATE_LIMITED', 'PERSISTENCE_FAILED', 'UNAVAILABLE']),
     message: z.string().min(1).max(256),
     requestId: RequestIdSchema,
   }).strict(),
