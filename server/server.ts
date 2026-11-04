@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { createHash, randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { canTransitionActivity, CommandRequestSchema, ProtocolStateSchema, type CommandRequest } from '../src/shared/protocol.ts';
 import { createDemoState, transitionDemo } from './adapters/demo.ts';
 import { createWidget, updateWidget, setWidgetVisibility, removeWidget, removeExpiredWidgets, type WidgetPrincipal } from './widgets.ts';
@@ -381,7 +382,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   return app;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port=Number(process.env.PORT ?? 4174), host=process.env.HOST ?? '127.0.0.1';
   if(!['localhost','127.0.0.1','::1'].includes(host)) throw new Error('HTTP server must bind to loopback without TLS');
    const autoAccess=parseLocalAutoAccess(process.env.GLIMPSE_LOCAL_AUTO_ACCESS);
