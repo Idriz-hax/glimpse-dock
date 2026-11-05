@@ -19,6 +19,6 @@
 
 - [ ] After both subplans reconcile, run `npm test`, then `npm run build`; fix failures before declaring completion.
 - [ ] Use browser review at 1920×1080 and narrow width; check keyboard/focus, screen-reader status semantics, reduced motion, contrast, and no color-only state cues.
-- [ ] On a trusted LAN, exercise HTTP only after warning/confirmation and HTTPS with browser-trusted certificate. Verify no HTTPS downgrade, no access outside firewall policy, and no remote pairing/Display/voice.
+- [ ] On a trusted LAN, exercise HTTP only after warning/confirmation and HTTPS with browser-trusted certificate. Verify peers outside the configured CIDR are rejected by both application and firewall, no HTTPS downgrade occurs, and remote pairing/Display/voice are denied.
 - [ ] Dispatch a security review of the completed listener, account migration, request-origin checks, cookies, and route boundaries; resolve material findings before shipping.
 - [ ] Run live Hermes and Wyoming voice validation on the user installation; record as external acceptance, not automated test coverage.

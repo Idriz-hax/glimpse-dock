@@ -27,16 +27,16 @@
 
 ## Task 2: Transport configuration and route security
 
-- [ ] Add failing tests for default loopback HTTP, invalid/public/wildcard bind rejection, LAN access disabled by default, explicit HTTP versus HTTPS selection, no simultaneous listeners, TLS missing/mismatched/unreadable material rejection, exact origin/Host policy, `Secure` cookie only for HTTPS, and no HTTPS-to-HTTP fallback.
+- [ ] Add failing tests for default loopback HTTP; invalid/public/wildcard/unassigned bind rejection; missing, malformed, non-private or bind-excluding trusted CIDR rejection; LAN requests accepted only from the configured CIDR; IPv4-mapped IPv6 normalization; LAN access disabled by default; explicit HTTP versus HTTPS selection; no simultaneous listeners; TLS missing/mismatched/unreadable material rejection; exact origin/Host policy; `Secure` cookie only for HTTPS; and no HTTPS-to-HTTP fallback.
 - [ ] Run `npx vitest run tests/server.test.ts tests/server-security.test.ts tests/websocket-security.test.ts tests/voice-routes.test.ts`; confirm new cases fail.
-- [ ] Introduce validated listener configuration (testable independently of `listen`): default loopback HTTP; explicit private-address LAN opt-in; one selected mode; HTTPS requires cert/key and exact HTTPS origin. Pass TLS material to Fastify's HTTPS server. Keep `trustProxy: false`; reject unsafe/malformed configuration before opening the listener and never log key bytes.
+- [ ] Introduce validated listener configuration (testable independently of `listen`): default loopback HTTP; explicit private, host-assigned bind address plus explicit private trusted CIDR containing that bind; exactly one selected mode; HTTPS requires cert/key and exact HTTPS origin. Use Node interface data to verify bind assignment; enforce direct `req.ip` membership in the configured CIDR and normalize IPv4-mapped IPv6. Pass TLS material to Fastify's HTTPS server. Keep `trustProxy: false`; reject unsafe/malformed configuration before opening the listener and never log key bytes.
 - [ ] Enforce configured exact origin and expected Host for mutating HTTP and authenticated WebSockets in either mode; retain CSRF/rate limits. Permit remote `/admin` plus authenticated Admin APIs/stream only. Reject remote Display pairing/redeem, Display surfaces, and all voice routes while leaving them available locally.
 - [ ] Require explicit host configuration to select LAN HTTP. At the login boundary, block submission until the operator acknowledges interception risk; keep a persistent warning while HTTP is active. Mark HTTPS recommended and display safe startup/configuration errors; never describe HTTP as secure.
 - [ ] Rerun focused security tests. Manually inspect session cookie headers and exercise authorized/unauthorized requests for both modes.
 
 ## Task 3: Operator documentation
 
-- [ ] Update README and local deployment/security docs: loopback default; required local owner setup/migration; transport choices; HTTP credential/session interception warning; HTTPS trusted-certificate/origin and external renewal/restart; protected key permissions; firewall limited to trusted subnet; no port forwarding/public exposure.
+- [ ] Update README and local deployment/security docs: loopback default; required local owner setup/migration; transport choices; HTTP credential/session interception warning; HTTPS trusted-certificate/origin and external renewal/restart; protected key permissions; mandatory application CIDR and matching firewall restriction; no port forwarding/public exposure.
 - [ ] Remove obsolete claims that LAN/TLS are unavailable only after the configuration is implemented and tested. Keep deployment recipes consistent across operating systems.
 - [ ] Run `git diff --check` and search docs for contradictory claims (`loopback only`, `TLS not implemented`, `non-loopback`).
 

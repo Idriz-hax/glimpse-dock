@@ -50,11 +50,11 @@ Preserve current run-fencing and terminal-event protections; this change must no
 ### Network and transport configuration
 
 - Loopback-only HTTP remains the default and behaves as before.
-- LAN Admin is explicit opt-in and offers mutually exclusive `HTTP (insecure)` and `HTTPS (recommended)` deployment modes; both require an explicit private LAN interface address. Do not accept wildcard or public-interface binds. Do not start both transports on LAN or silently downgrade HTTPS to HTTP.
+- LAN Admin is explicit opt-in and offers mutually exclusive `HTTP (insecure)` and `HTTPS (recommended)` deployment modes. Both require an exact private address assigned to a host interface and an explicit trusted private subnet CIDR; reject wildcard addresses, loopback, public/global addresses, unassigned addresses, and subnet ranges that do not contain the bind address. Accept LAN requests only when the direct peer IP belongs to that trusted subnet (with IPv4-mapped IPv6 normalized); do not trust forwarded IP headers. Do not start both transports on LAN or silently downgrade HTTPS to HTTP.
 - HTTPS requires a certificate file, matching private key, and exact HTTPS browser origin covered by a certificate trusted by client browsers. A public certificate can be issued using DNS-01 validation without exposing the app; local DNS can map the hostname to the private LAN address. A private CA is an alternative only if the operator configures trust on each client.
 - LAN HTTP requires a separate explicit insecure opt-in. Display a persistent warning before and after activation explaining that usernames, passwords, and session cookies can be intercepted and replayed by anyone able to monitor the network. Require a deliberate confirmation; recommend HTTPS and a firewall-restricted trusted LAN. HTTP is never available remotely unless this mode is explicitly selected.
 - Keep certificate/private-key material outside the database and logs; require protected filesystem permissions. Certificate issuance/renewal is external to the app; after renewal, restart the service to load the new files. Do not expose the service through router port-forwarding or public interfaces.
-- Require host firewall rules allowing the selected LAN port only from the trusted subnet. Reject startup for missing/mismatched/unreadable TLS material in HTTPS mode, invalid origin, unsupported bind address, or unupgraded owner account. Report safe causes without exposing key contents.
+- Require host firewall rules allowing the selected LAN port only from the same trusted subnet. The application peer-IP check and firewall rule are both required. Reject startup for missing trusted subnet, invalid subnet/CIDR, unassigned/non-private bind address, missing/mismatched/unreadable TLS material in HTTPS mode, invalid origin, or unupgraded owner account. Report safe causes without exposing key contents.
 
 ### Request/auth boundary
 
@@ -82,7 +82,7 @@ Dashboard/Display coverage includes: null and supplied progress; idle, active, w
 ### Manual/browser and external acceptance
 
 - Review at 1920×1080 and a narrow viewport, with keyboard and screen-reader semantics. Confirm status is understandable without color or motion alone.
-- On a trusted LAN, test both modes separately: HTTPS with a trusted DNS-01 certificate and no browser warning; HTTP only after the explicit warning/confirmation. Confirm credentials are never sent over HTTP unless the operator chose that mode, clients outside the firewall's trusted subnet cannot connect, unauthenticated clients cannot view protected Admin data, HTTPS never downgrades, and there is no router/public exposure.
+- On a trusted LAN, test both modes separately: HTTPS with a trusted DNS-01 certificate and no browser warning; HTTP only after the explicit warning/confirmation. Confirm credentials are never sent over HTTP unless the operator chose that mode, clients outside the configured trusted subnet are rejected by the application and firewall, unauthenticated clients cannot view protected Admin data, HTTPS never downgrades, and there is no router/public exposure.
 - Run live Hermes CLI/Gateway and Hermes API Server + Wyoming voice checks on the user's actual installation. Automated/fake-client tests do not count as live voice acceptance. Record exact versions and privacy/run-fencing results in the existing validation checklist.
 
 ## Explicitly out of scope
