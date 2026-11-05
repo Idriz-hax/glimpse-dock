@@ -36,8 +36,9 @@
 
 ## Task 3: Operator documentation
 
+- [ ] Until the LAN listener is implemented and verified, leave current README/deployment statements intact: the released/current server is loopback-only. Do not describe planned LAN support as available.
 - [ ] Update README and local deployment/security docs: loopback default; required local owner setup/migration; transport choices; HTTP credential/session interception warning; HTTPS trusted-certificate/origin and external renewal/restart; protected key permissions; mandatory application CIDR and matching firewall restriction; no port forwarding/public exposure.
-- [ ] Remove obsolete claims that LAN/TLS are unavailable only after the configuration is implemented and tested. Keep deployment recipes consistent across operating systems.
+- [ ] After listener implementation and tests pass, replace obsolete “LAN/TLS unavailable” claims with the shipped transport behavior, setup requirements, CIDR and firewall policy. Keep deployment recipes consistent across operating systems.
 - [ ] Run `git diff --check` and search docs for contradictory claims (`loopback only`, `TLS not implemented`, `non-loopback`).
 
 ## Completion
