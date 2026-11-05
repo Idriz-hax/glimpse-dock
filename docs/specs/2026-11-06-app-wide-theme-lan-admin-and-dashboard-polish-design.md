@@ -8,7 +8,7 @@
 
 ## Goal
 
-Make the existing Admin, Visual Display, sign-in/setup, voice, widgets, and feedback states feel like one product through a shared palette; fix the specific trust-eroding dashboard/display details identified by the Hermes tester; and support authenticated Admin access from a trusted LAN using built-in HTTPS. Preserve the established layouts and activity model. This is a consistency and correctness pass, not a redesign or an unrestricted remote-hosting feature.
+Make the existing Admin, Visual Display, sign-in/setup, voice, widgets, and feedback states feel like one product through a shared palette; fix the specific trust-eroding dashboard/display details identified by the Hermes tester; and support authenticated Admin access from a trusted LAN using a deliberate HTTP or HTTPS choice. Preserve the established layouts and activity model. This is a consistency and correctness pass, not a redesign or an unrestricted remote-hosting feature.
 
 ## Baseline and boundaries
 
@@ -38,7 +38,7 @@ Verify text and controls against each surface for WCAG AA contrast, visible focu
 
 Preserve current run-fencing and terminal-event protections; this change must not relax voice or activity lifecycle guarantees.
 
-## 3. Authenticated trusted-LAN Admin over built-in HTTPS
+## 3. Authenticated trusted-LAN Admin with explicit HTTP/HTTPS choice
 
 ### Account setup and compatibility
 
@@ -47,24 +47,25 @@ Preserve current run-fencing and terminal-event protections; this change must no
 - First-time setup remains loopback-only. Remote setup/bootstrap is not allowed.
 - For existing password-only databases, preserve the password hash and sessions. After local owner login, require a one-time username selection before LAN mode can start. Commit the username upgrade atomically. Until upgraded, LAN mode fails closed with a clear startup explanation; local login remains available.
 
-### Network/TLS configuration
+### Network and transport configuration
 
 - Loopback-only HTTP remains the default and behaves as before.
-- LAN mode is explicit opt-in and requires an explicit private LAN interface address, a certificate file, a matching private key file, and one exact HTTPS browser origin covered by the certificate. Do not accept wildcard or public-interface binds.
-- Serve the remote mode directly with HTTPS. Do not offer an HTTP LAN listener or downgrade/fallback when TLS is missing or invalid. Keep certificate/private-key material outside the database and logs; require protected filesystem permissions.
-- Require the operator to install/trust the configured CA on each client device and configure the host firewall to allow the HTTPS port only from the trusted LAN subnet. Document that router port-forwarding/public exposure is unsupported.
-- Reject startup for missing/mismatched/unreadable TLS material, invalid origin, unsupported bind address, or unupgraded owner account. Report the safe cause without exposing key contents.
+- LAN Admin is explicit opt-in and offers mutually exclusive `HTTP (insecure)` and `HTTPS (recommended)` deployment modes; both require an explicit private LAN interface address. Do not accept wildcard or public-interface binds. Do not start both transports on LAN or silently downgrade HTTPS to HTTP.
+- HTTPS requires a certificate file, matching private key, and exact HTTPS browser origin covered by a certificate trusted by client browsers. A public certificate can be issued using DNS-01 validation without exposing the app; local DNS can map the hostname to the private LAN address. A private CA is an alternative only if the operator configures trust on each client.
+- LAN HTTP requires a separate explicit insecure opt-in. Display a persistent warning before and after activation explaining that usernames, passwords, and session cookies can be intercepted and replayed by anyone able to monitor the network. Require a deliberate confirmation; recommend HTTPS and a firewall-restricted trusted LAN. HTTP is never available remotely unless this mode is explicitly selected.
+- Keep certificate/private-key material outside the database and logs; require protected filesystem permissions. Certificate issuance/renewal is external to the app; after renewal, restart the service to load the new files. Do not expose the service through router port-forwarding or public interfaces.
+- Require host firewall rules allowing the selected LAN port only from the trusted subnet. Reject startup for missing/mismatched/unreadable TLS material in HTTPS mode, invalid origin, unsupported bind address, or unupgraded owner account. Report safe causes without exposing key contents.
 
 ### Request/auth boundary
 
 - Remote owner login uses the single owner username/password. Use the existing password-hashing, session-digest, CSRF, and rate-limit mechanisms.
-- Set owner session cookies `HttpOnly`, `SameSite=Strict`, and `Secure` in HTTPS mode. Require the configured exact HTTPS origin for state-changing HTTP requests and authenticated WebSockets; retain CSRF validation.
+- Set owner session cookies `HttpOnly` and `SameSite=Strict`; set `Secure` in HTTPS mode. Require the configured exact origin for state-changing requests and authenticated WebSockets in either LAN mode; retain CSRF validation. Make clear that origin/CSRF checks do not protect credentials from interception in HTTP mode.
 - Restrict remote routes to `/admin` and the authenticated APIs/WebSocket required by Admin. Keep paired-display routes/pairing and voice/microphone endpoints loopback-only.
-- Do not trust arbitrary `Host`, `Origin`, or forwarded headers. LAN mode is direct TLS, not proxy mode.
+- Do not trust arbitrary `Host`, `Origin`, or forwarded headers. LAN mode is a direct listener, not proxy mode.
 
 ## UX and operational states
 
-The Admin flow covers: first-run bootstrap on localhost; existing password-only account upgrade on localhost; TLS configuration failure with a safe diagnostic; HTTPS login; wrong credentials/rate limiting; authenticated Admin; and remote access disabled by default. An untrusted/expired/mismatched certificate is a browser trust failure, not an app fallback to HTTP.
+The Admin flow covers: first-run bootstrap on localhost; existing password-only account upgrade on localhost; LAN access disabled by default; choosing HTTP with a persistent interception warning or HTTPS with certificate setup; TLS configuration failure with a safe diagnostic; wrong credentials/rate limiting; and authenticated Admin. In HTTPS mode, a missing, expired, or hostname-mismatched certificate is a browser/server TLS failure, not an app fallback to HTTP. HTTP mode must never be represented as secure.
 
 Dashboard/Display coverage includes: null and supplied progress; idle, active, waiting, completed, error, and disconnected states; elapsed-time start/resume/clear; no events/no slots; known and unknown control-availability reasons; known/unknown tool category; and voice readiness/error states. Existing owner/paired-display separation remains intact.
 
@@ -75,15 +76,15 @@ Dashboard/Display coverage includes: null and supplied progress; idle, active, w
 - Protocol tests cover nullable `turnStartedAt`, defaulting legacy records, active-transition timestamp behavior, and reset/retention rules.
 - View tests cover null/present progress, badge mapping for every activity, empty-event/slot messages, control-reason copy, stale-version removal, known/unknown tool icons, and elapsed-time visibility/reset behavior.
 - Auth tests cover new username/password setup, local-only one-time migration of existing password-only state without password/session loss, and login rate limiting.
-- Server/security tests cover loopback default, explicit HTTPS requirements, private-interface validation, TLS startup failure, exact origin/Host checks, Secure cookies, CSRF, authenticated remote Admin access, and remote denial for pairing/Display/voice routes.
+- Server/security tests cover loopback default, explicit LAN opt-in, private-interface validation, HTTPS certificate startup failure, exact origin/Host checks, Secure-cookie behavior by transport, CSRF, authenticated remote Admin access, remote denial for pairing/Display/voice routes, and the HTTP warning/confirmation state.
 - Audit source color values to confirm all palette values live in central tokens and all app surfaces consume them. Verify contrast and focus on Admin, Display, auth, voice, widget and operational/status surfaces.
 
 ### Manual/browser and external acceptance
 
 - Review at 1920×1080 and a narrow viewport, with keyboard and screen-reader semantics. Confirm status is understandable without color or motion alone.
-- On a trusted LAN, install the CA trust, access the configured HTTPS origin from an authorized client, and sign into Admin. Verify clients outside the firewall's trusted subnet cannot connect, and unauthenticated clients on the LAN cannot view protected Admin data. Confirm there is no HTTP fallback or router/public exposure.
+- On a trusted LAN, test both modes separately: HTTPS with a trusted DNS-01 certificate and no browser warning; HTTP only after the explicit warning/confirmation. Confirm credentials are never sent over HTTP unless the operator chose that mode, clients outside the firewall's trusted subnet cannot connect, unauthenticated clients cannot view protected Admin data, HTTPS never downgrades, and there is no router/public exposure.
 - Run live Hermes CLI/Gateway and Hermes API Server + Wyoming voice checks on the user's actual installation. Automated/fake-client tests do not count as live voice acceptance. Record exact versions and privacy/run-fencing results in the existing validation checklist.
 
 ## Explicitly out of scope
 
-No internet/public access, reverse-proxy mode, LAN HTTP, automatic certificate authority/trust installation, multiple owner accounts, remote display pairing, remote voice/microphone, new agent orchestration, or wholesale layout redesign. Broader Milestone 6 Admin completeness/accessibility items should be separately audited and prioritized; this design covers the concrete tester findings above, not every historical product idea.
+No internet/public access, reverse-proxy mode, simultaneous LAN HTTP+HTTPS listeners, automatic certificate issuance/renewal, private certificate-authority distribution, multiple owner accounts, remote display pairing, remote voice/microphone, new agent orchestration, or wholesale layout redesign. LAN HTTP is an explicit insecure opt-in, not a recommended deployment. Broader Milestone 6 Admin completeness/accessibility items should be separately audited and prioritized; this design covers the concrete tester findings above, not every historical product idea.
