@@ -1,6 +1,6 @@
 # App-wide theme, trusted-LAN Admin, and dashboard polish
 
-**Status:** Proposed for user review
+**Status:** Approved for implementation (2026-11-06)
 
 **Baseline:** `feature/hermes-integration` at `49c7c4d`
 
