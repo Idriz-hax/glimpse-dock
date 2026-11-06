@@ -113,21 +113,28 @@ describe('backend', () => {
     expect((await app.inject({ url: '/api/state', headers: { cookie: displayCookie } })).statusCode).toBe(200);
   });
   it('rejects invalid activity transitions without revising state and keeps task commands coherent', async () => {
-    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    let clock = 1_700_000_000_000;
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', now: () => clock });
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
     await send('state.set-activity', { activity: 'thinking' });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBe(clock);
+    clock++;
+    for (const activity of ['tool-use', 'responding', 'waiting'] as const) {
+      await send('state.set-activity', { activity });
+      expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBe(1_700_000_000_000);
+    }
     await send('task.complete', {});
     const before = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
-    expect(before.state.activity).toBe('completed');
+    expect(before.state).toMatchObject({ activity: 'completed', turnStartedAt: null });
     expect((await send('state.set-activity', { activity: 'tool-use' })).statusCode).toBe(403);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(before);
     expect((await send('task.update', { task: 'Next task' })).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state).toMatchObject({ task: 'Next task', activity: 'thinking', progress: null });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state).toMatchObject({ task: 'Next task', activity: 'thinking', progress: null, turnStartedAt: clock });
   });
   it('rejects completion from idle or error without revising state but allows repeated completion', async () => {
-    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', now: () => 1_700_000_000_000 });
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
@@ -136,10 +143,13 @@ describe('backend', () => {
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(idle);
     await send('state.set-activity', { activity: 'error' });
     const error = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    expect(error.state.turnStartedAt).toBeNull();
     expect((await send('task.complete', {})).statusCode).toBe(403);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(error);
     await send('state.set-activity', { activity: 'thinking' });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBe(1_700_000_000_000);
     await send('task.complete', {});
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBeNull();
     expect((await send('task.complete', {})).statusCode).toBe(200);
   });
   it('issues stable agent IDs and makes widget mutation retries idempotent', async () => {

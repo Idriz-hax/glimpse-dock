@@ -60,6 +60,13 @@ describe('protocol v1', () => {
     expect(ProtocolStateSchema.parse({ ...state, progress: null }).progress).toBeNull();
     const { progress: _progress, ...withoutProgress } = state;
     expect(ProtocolStateSchema.parse(withoutProgress).progress).toBeNull();
+    const { turnStartedAt: _turnStartedAt, ...withoutTurnStartedAt } = state;
+    expect(ProtocolStateSchema.parse(withoutTurnStartedAt).turnStartedAt).toBeNull();
+    expect(ProtocolStateSchema.parse({ ...state, turnStartedAt: 0 }).turnStartedAt).toBe(0);
+    expect(ProtocolStateSchema.parse({ ...state, turnStartedAt: null }).turnStartedAt).toBeNull();
+    for (const turnStartedAt of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(ProtocolStateSchema.safeParse({ ...state, turnStartedAt }).success).toBe(false);
+    }
   });
 
   it('validates structured errors', () => {

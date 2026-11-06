@@ -99,6 +99,7 @@ export const ProtocolStateSchema = z.preprocess(value => {
   agent: z.string().max(256),
   task: z.string().max(2048),
   progress: ProgressSchema.nullable().default(null),
+  turnStartedAt: z.number().int().safe().nonnegative().nullable().default(null),
   running: z.boolean(),
   activity: ActivitySchema.default('idle'),
   displayStyle: DisplayStyleSchema.default('quiet'),

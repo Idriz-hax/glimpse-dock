@@ -6,6 +6,7 @@ const stamp = (now: number) => new Date(now).toLocaleTimeString([], { hour: '2-d
 
 export function createDemoState(now = Date.now()): State {
   const state = initialState();
+  state.turnStartedAt = now;
   state.widgets = [];
   for (const widget of initialState().widgets) {
     const { owner: _owner, visible: _visible, createdAt: _createdAt, updatedAt: _updatedAt, ...input } = widget;
@@ -31,6 +32,12 @@ export function transitionDemo(state: State, command: CommandRequest, now = Date
     next.progress = 0;
     next.activity = 'thinking';
   };
+  const finish = () => {
+    next.turnStartedAt = ['thinking', 'tool-use', 'responding', 'waiting'].includes(next.activity)
+      ? ['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity) ? state.turnStartedAt : now
+      : null;
+    return next;
+  };
 
   if (command.type === 'demo.reset') return createDemoState(now);
    if (command.type === 'demo.set-enabled') {
@@ -39,13 +46,13 @@ export function transitionDemo(state: State, command: CommandRequest, now = Date
     else if (!next.running) next.activity = next.progress === 100 && next.activity === 'completed' ? 'completed' : 'waiting';
     else next.activity = 'thinking';
     addLog(next.running ? 'Demo resumed' : 'Demo paused', `Automatic demo updates ${next.running ? 'enabled' : 'disabled'}`);
-    return next;
+    return finish();
   }
   if (command.type !== 'demo.simulate') return next;
   if (next.activity === 'completed' || next.activity === 'error') {
     startFreshTask();
     addLog('New task started', next.task);
-    return next;
+    return finish();
   }
 
   const actions = [
@@ -69,5 +76,5 @@ export function transitionDemo(state: State, command: CommandRequest, now = Date
     },
   ];
   actions[Math.floor(Math.random() * actions.length)]();
-  return next;
+  return finish();
 }

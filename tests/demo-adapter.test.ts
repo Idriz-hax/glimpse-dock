@@ -39,21 +39,26 @@ describe('Demo adapter', () => {
 
   it('sets activity and completion consistently for demo actions', () => {
     vi.spyOn(Math, 'random').mockReturnValue(1 / 4);
-    const original = createDemoState();
-    expect(transitionDemo(original, { v: 1, requestId: 'tool', type: 'demo.simulate', payload: {} }).activity).toBe('tool-use');
+    const original = { ...createDemoState(123), activity: 'completed' as const, progress: 100, turnStartedAt: null };
+    expect(transitionDemo(original, { v: 1, requestId: 'resume', type: 'demo.set-enabled', payload: { enabled: true } }, 456).turnStartedAt).toBe(456);
+    const active = { ...createDemoState(456), turnStartedAt: 456 };
+    expect(transitionDemo(active, { v: 1, requestId: 'tool', type: 'demo.simulate', payload: {} }, 789).activity).toBe('tool-use');
+    expect(transitionDemo(active, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } }, 789).turnStartedAt).toBe(456);
     vi.spyOn(Math, 'random').mockReturnValue(1 / 3);
-    const completed = transitionDemo(original, { v: 1, requestId: 'complete', type: 'demo.simulate', payload: {} });
+    const completed = transitionDemo(createDemoState(123), { v: 1, requestId: 'complete', type: 'demo.simulate', payload: {} });
     expect(completed).toMatchObject({ progress: 100, activity: 'completed' });
+    expect(completed.turnStartedAt).toBeNull();
     expect(transitionDemo(completed, { v: 1, requestId: 'pause', type: 'demo.set-enabled', payload: { enabled: false } })).toMatchObject({ progress: 100, activity: 'completed', running: false });
   });
 
   it('starts a fresh task when resuming or simulating from a terminal state', () => {
-    const completed = { ...createDemoState(), activity: 'completed' as const, progress: 100, task: 'Finished task' };
+    const completed = { ...createDemoState(), activity: 'completed' as const, progress: 100, task: 'Finished task', turnStartedAt: null };
     const errored = { ...completed, activity: 'error' as const };
     vi.spyOn(Math, 'random').mockReturnValue(1 / 4);
     for (const terminal of [completed, errored]) {
       expect(transitionDemo(terminal, { v: 1, requestId: 'resume', type: 'demo.set-enabled', payload: { enabled: true } }))
         .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace', running: true });
+      expect(transitionDemo(terminal, { v: 1, requestId: 'resume', type: 'demo.set-enabled', payload: { enabled: true } }, 789).turnStartedAt).toBe(789);
       expect(transitionDemo(terminal, { v: 1, requestId: 'simulate', type: 'demo.simulate', payload: {} }))
         .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace' });
     }

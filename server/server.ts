@@ -239,8 +239,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   app.post('/api/logout',async(req:any,reply)=>{const session=auth(req);if(!session||req.body?.csrf!==session.csrf)return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});db.prepare('DELETE FROM sessions WHERE digest=?').run(session.digest);closeSockets(session.digest);reply.clearCookie('session',{path:'/'});return {ok:true};});
     app.post('/api/agents', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const secret=token(), id=randomUUID(); db.prepare('INSERT INTO agents(digest,revoked,agent_id) VALUES (?,0,?)').run(hash(secret),id); return { id, secret }; });
   app.delete('/api/agents/:digest', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); db.prepare('UPDATE agents SET revoked=1 WHERE digest=? OR agent_id=?').run(req.params.digest,req.params.digest); return {ok:true}; });
-   const commit = (next: typeof state, detail: string, nextSource: string) => {
-     const rev=revision+1;
+    const commit = (next: typeof state, detail: string, nextSource: string) => {
+      const rev=revision+1;
+      next = ProtocolStateSchema.parse(next);
       try { tx(next,rev,detail,nextSource); } catch { recordDiagnostic('persistence', 'PERSISTENCE_FAILED', 500); return false; }
      state=next; revision=rev; source=nextSource;
      const message=JSON.stringify({v:1,type:'state',revision,source,state});
@@ -271,15 +272,16 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
        next = transitionDemo(state, command, now());
       } else if (isWidgetCommand) { /* handled through widget lifecycle */ }
-      else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null };
+       else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null, turnStartedAt: state.activity === 'thinking' || state.activity === 'tool-use' || state.activity === 'responding' || state.activity === 'waiting' ? state.turnStartedAt : now() };
       else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
        else if (command.type === 'state.set-activity') {
          if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
-         next = { ...state, activity: command.payload.activity };
+          const activity = command.payload.activity;
+          next = { ...state, activity, turnStartedAt: ['thinking', 'tool-use', 'responding', 'waiting'].includes(activity) ? (['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity) ? state.turnStartedAt : now()) : null };
        }
        else if (command.type === 'task.complete') {
          if (!canTransitionActivity(state.activity, 'completed')) return null;
-         next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully' };
+          next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully', turnStartedAt: null };
        }
       else if (command.type === 'metric.set-value') {
         const widget = state.widgets.find(item => item.id === command.payload.id);
@@ -297,8 +299,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (principal !== 'owner') return null;
          next = { ...state, displayPreferences: command.payload.preferences };
        }
-      if (isWidgetCommand) {
-        const rev = revision + 1;
+       if (isWidgetCommand) {
+         const rev = revision + 1;
+         next = ProtocolStateSchema.parse(next);
         try { db.transaction(() => { tx(next,rev,command.type,principalSource(principal)); db.prepare('INSERT INTO widget_commands VALUES (?,?,?,?,?)').run(principal,command.requestId,fingerprint,rev,Date.now()); db.prepare('DELETE FROM widget_commands WHERE rowid NOT IN (SELECT rowid FROM widget_commands ORDER BY created_at DESC LIMIT 1000)').run(); })(); }
          catch { recordDiagnostic('persistence', 'PERSISTENCE_FAILED', 500); return false; }
         state=next; revision=rev; source=principalSource(principal);

@@ -2,7 +2,7 @@ export type Level = 'info' | 'success' | 'warning';
 export type Activity = { id: number; time: string; title: string; detail: string; level: Level };
 import { DisplayPreferencesSchema, WidgetSchema, type Widget as ProtocolWidget } from './shared/protocol';
 export type Widget = ProtocolWidget;
-export type State = { agent: string; task: string; progress: number | null; running: boolean; activity: 'idle' | 'thinking' | 'tool-use' | 'responding' | 'waiting' | 'completed' | 'error'; displayStyle: 'quiet' | 'ambient'; displayPreferences: ReturnType<typeof DisplayPreferencesSchema.parse>; widgets: Widget[]; logs: Activity[] };
+export type State = { agent: string; task: string; progress: number | null; running: boolean; activity: 'idle' | 'thinking' | 'tool-use' | 'responding' | 'waiting' | 'completed' | 'error'; turnStartedAt: number | null; displayStyle: 'quiet' | 'ambient'; displayPreferences: ReturnType<typeof DisplayPreferencesSchema.parse>; widgets: Widget[]; logs: Activity[] };
 
 const defaults: Widget[] = [
   { version: 1, id: 'tasks', owner: 'demo', title: 'Tasks completed', content: { kind: 'metric', label: 'Tasks completed', value: '24', caption: '+6 in this session' }, placement: 'primary', visible: true, createdAt: 0, updatedAt: 0, expiresAt: null },
@@ -11,7 +11,7 @@ const defaults: Widget[] = [
 ];
 
 export function initialState(): State {
-  return { agent: 'Hermes (Demo)', task: 'Analysing workspace and preparing next actions', progress: 64, running: true, activity: 'thinking', displayStyle: 'quiet', displayPreferences: DisplayPreferencesSchema.parse({}), widgets: defaults.map(w => ({ ...w })), logs: [] };
+  return { agent: 'Hermes (Demo)', task: 'Analysing workspace and preparing next actions', progress: 64, running: true, activity: 'thinking', turnStartedAt: null, displayStyle: 'quiet', displayPreferences: DisplayPreferencesSchema.parse({}), widgets: defaults.map(w => ({ ...w })), logs: [] };
 }
 
 export const maxLogId = (logs: readonly Pick<Activity, 'id'>[], current = 0) => Math.max(current, ...logs.map(log => log.id));
