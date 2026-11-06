@@ -1,4 +1,4 @@
-export type SessionInfo = { role: 'owner' | 'display' | null; csrf?: string; demoEnabled?: boolean; setupRequired?: boolean; ownerAutoAccess?: boolean };
+export type SessionInfo = { role: 'owner' | 'display' | null; csrf?: string; demoEnabled?: boolean; setupRequired?: boolean; identityUpgradeRequired?: boolean; ownerAutoAccess?: boolean; transport?: { mode: 'loopback' | 'http-insecure' | 'https'; lan: boolean; secure: boolean } };
 type Request = (path: string, body?: unknown) => Promise<Record<string, unknown>>;
 
 export async function bootstrapSession(request: Request): Promise<SessionInfo> {

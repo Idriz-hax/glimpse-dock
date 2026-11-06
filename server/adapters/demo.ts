@@ -29,6 +29,7 @@ export function transitionDemo(state: State, command: CommandRequest, now = Date
   };
   const startFreshTask = () => {
     next.task = 'Preparing visual summary for the workspace';
+    next.toolCategory = null;
     next.progress = 0;
     next.activity = 'thinking';
   };

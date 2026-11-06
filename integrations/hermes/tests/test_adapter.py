@@ -15,7 +15,7 @@ class HermesEventAdapterTests(unittest.TestCase):
                      ("user_message", "result", "args", "prompt", "response")}
         cases = (
             ("pre_llm_call", {}, [("task.update", {"task": "Hermes is processing a turn"})]),
-            ("pre_tool_call", {"tool_call_id": "opaque-1"}, [("state.set-activity", {"activity": "tool-use"})]),
+            ("pre_tool_call", {"tool_call_id": "opaque-1"}, [("task.update", {"task": "Hermes is using a tool"}), ("state.set-activity", {"activity": "tool-use"})]),
             ("post_tool_call", {"tool_call_id": "opaque-1"}, [("state.set-activity", {"activity": "thinking"})]),
             ("on_human_input_request", {}, [("state.set-activity", {"activity": "waiting"})]),
             ("on_human_input_resolved", {}, [("state.set-activity", {"activity": "thinking"})]),
@@ -38,7 +38,7 @@ class HermesEventAdapterTests(unittest.TestCase):
 
     def test_tool_call_ids_track_parallel_work_and_clear_at_finalization(self):
         self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="a"),
-                         [("state.set-activity", {"activity": "tool-use"})])
+                         [("task.update", {"task": "Hermes is using a tool"}), ("state.set-activity", {"activity": "tool-use"})])
         self.adapter.handle("pre_tool_call", tool_call_id="b")
         self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="a"), [])
         self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="b"),
@@ -71,10 +71,26 @@ class HermesEventAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="overflow"), [])
         self.assertEqual(len(self.adapter._tool_calls), cap)
         self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="call-0"),
-                         [("state.set-activity", {"activity": "tool-use"})])
+                         [("task.update", {"task": "Hermes is using a tool"}), ("state.set-activity", {"activity": "tool-use"})])
         self.assertEqual(len(self.adapter._tool_calls), cap)
         self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="call-0"), [])
         self.assertEqual(len(self.adapter._tool_calls), cap - 1)
+
+    def test_recognized_tool_names_emit_only_allowlisted_category(self):
+        for tool_name, category in (("terminal", "shell"), ("python", "code"), ("search_files", "search")):
+            with self.subTest(tool_name=tool_name):
+                commands = self.adapter.handle("pre_tool_call", tool_call_id=tool_name,
+                                               tool_name=tool_name, args="private", result="private")
+                self.assertEqual(commands, [
+                    ("task.update", {"task": "Hermes is using a tool", "toolCategory": category}),
+                    ("state.set-activity", {"activity": "tool-use"}),
+                ])
+
+    def test_unknown_tool_name_omits_category(self):
+        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="unknown",
+                                             tool_name="unrecognized", args="private"),
+                         [("task.update", {"task": "Hermes is using a tool"}),
+                          ("state.set-activity", {"activity": "tool-use"})])
 
 
 if __name__ == "__main__":

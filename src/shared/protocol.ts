@@ -4,6 +4,7 @@ const RequestIdSchema = z.string().min(1).max(64);
 const EmptyPayloadSchema = z.object({}).strict();
 const ProgressSchema = z.number().finite().min(0).max(100);
 const TaskSchema = z.string().min(1).max(2048);
+const ToolCategorySchema = z.enum(['shell', 'code', 'search']);
 const WidgetIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
 const EpochSchema = z.number().int().safe().nonnegative();
 const ColorSchema = z.enum(['cyan', 'mint', 'blue', 'purple', 'amber', 'muted', 'white']);
@@ -69,7 +70,7 @@ export const CommandRequestSchema = z.discriminatedUnion('type', [
   command('widget.remove', z.object({ id: WidgetIdSchema }).strict()),
   command('state.set-progress', z.object({ progress: ProgressSchema.nullable() }).strict()),
   command('state.set-activity', z.object({ activity: ActivitySchema }).strict()),
-  command('task.update', z.object({ task: TaskSchema }).strict()),
+  command('task.update', z.object({ task: TaskSchema, toolCategory: ToolCategorySchema.optional() }).strict()),
   command('task.complete', EmptyPayloadSchema),
   command('metric.set-value', z.object({ id: z.string().min(1).max(64), value: z.number().int().min(0).max(9_999_999) }).strict()),
   command('display.set-style', z.object({ style: DisplayStyleSchema }).strict()),
@@ -98,6 +99,7 @@ export const ProtocolStateSchema = z.preprocess(value => {
 }, z.object({
   agent: z.string().max(256),
   task: z.string().max(2048),
+  toolCategory: ToolCategorySchema.nullable().default(null),
   progress: ProgressSchema.nullable().default(null),
   turnStartedAt: z.number().int().safe().nonnegative().nullable().default(null),
   running: z.boolean(),

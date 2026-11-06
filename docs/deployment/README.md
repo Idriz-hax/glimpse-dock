@@ -1,6 +1,6 @@
 # Portable deployment
 
-Glimpse Dock is a single local Node.js process with a SQLite database and a browser UI. Keep the backend bound to loopback; it is not designed for LAN or public-network access. Run the backend and the graphical browser kiosk as separate user-session jobs.
+Glimpse Dock is a single Node.js process with a SQLite database and a browser UI. Loopback HTTP is the default. Optional trusted-LAN Admin requires explicit HTTP-insecure or HTTPS configuration; see [the security deployment guide](../security/local-deployment.md). Never expose it publicly or use router port forwarding. Run the backend and the graphical browser kiosk as separate user-session jobs.
 
 ## Requirements and install
 
@@ -12,13 +12,13 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:4174/admin` to set up the owner. The server serves Admin and Display routes on loopback. It intentionally rejects non-loopback `HOST` values. `PORT` changes the port; `GLIMPSE_DB` selects the SQLite file (default `glimpse-dock.sqlite`). Set the database path to a persistent directory writable only by the service account. Never put the database in a temporary directory or a shared/world-writable location.
+Open `http://127.0.0.1:4174/admin` to set up the owner locally. The default listener is loopback. LAN mode requires an assigned private bind address, explicit trusted private CIDR, exact origin, and a matching host firewall restriction. Configure one transport only; HTTPS certificate/key and renewal requirements are in the security guide. `PORT` changes the port; `GLIMPSE_DB` selects the SQLite file (default `glimpse-dock.sqlite`). Set the database path to a persistent directory writable only by the service account. Never put the database in a temporary directory or a shared/world-writable location.
 
 First-run owner setup requires `GLIMPSE_BOOTSTRAP_SECRET` and an owner password of 12–128 UTF-8 bytes. Supply the one-time bootstrap secret through a short-lived protected process environment, not a command-line argument or checked-in file; remove it after initial setup. Do not store the owner password in a service definition or browser startup arguments. Logs go to the process/service manager's standard output and error; do not include secrets in log configuration.
 
 ## Same-device access modes
 
-`GLIMPSE_LOCAL_AUTO_ACCESS` is `off` by default. `display` grants a local browser a read-only Display session; `owner` grants owner access to local clients able to reach the service, but only after initial owner setup. Owner mode is a deliberate local privilege bypass: enable it only on a trusted single-user device, heed the startup/UI warning, and disable it when no longer needed. It does not store a password and never starts microphone capture; voice requires explicit user activation. Neither mode allows LAN access.
+`GLIMPSE_LOCAL_AUTO_ACCESS` is `off` by default. `display` grants a local browser a read-only Display session; `owner` grants owner access to local clients able to reach the service, but only after initial owner setup. Owner mode is a deliberate local privilege bypass: enable it only on a trusted single-user device, heed the startup/UI warning, and disable it when no longer needed. It does not store a password and never starts microphone capture; voice requires explicit user activation. These options do not expand the LAN route allowlist.
 
 Pair a separate display through Admin's one-time pairing flow. Revocation and sign-out are available from Admin. Keep the kiosk browser in the intended signed-in desktop session; do not run a graphical browser as a system service.
 

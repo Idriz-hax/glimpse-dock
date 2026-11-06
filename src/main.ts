@@ -2,34 +2,39 @@ import './style.css';
 import './display.css';
 import './auth/auth.css';
 import { resolveRoute } from './routes';
-import { renderDisplay } from './display/view';
+import { renderDisplay, updateElapsedHint } from './display/view';
 import { mountDisplayWidgets } from './display/widgets';
 import { bindAdminEvents, renderAdmin, updatePreferenceSaveUI, type AdminDiagnostics, type AdminPage, type SampleKind } from './admin/view';
-import { renderDisplayGate, renderOwnerGate } from './auth/view';
+import { renderDisplayGate, renderOwnerGate, renderRestoredOwnerConsent } from './auth/view';
 import { bootstrapSession } from './auth/bootstrap';
 import { type State } from './demo-state';
 import { commandForInput, validSnapshot, parseStateMessage } from './frontend-client';
 import { StateMessageSchema } from './shared/protocol';
 import { mountVoice } from './display/voice';
+import { requestId } from './request-id';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const displayMode = resolveRoute(location.pathname) === 'display';
 let page: AdminPage = 'overview', state: State | null = null, role: string | null = null, csrf = '', demoMode = false;
-let authMode: 'setup' | 'login' = 'login', gateError = '', gateStatus = '', gatePending = false, pairingCode = '', pairingStatus = '', pairingError = '', pairingPending = false;
+let authMode: 'setup' | 'login' | 'upgrade' = 'login', gateError = '', gateStatus = '', gatePending = false, pairingCode = '', pairingStatus = '', pairingError = '', pairingPending = false;
 let socket: WebSocket | undefined, retry = 0, reconnectTimer: number | undefined, toastTimer: number | undefined;
+let elapsedTimer: number | undefined;
 let streamConnected = false;
 let preferenceStatus = 'Saved';
 let ownerAutoAccess = false;
+let restoredOwnerConsentPending = false;
+let transportMode: 'loopback' | 'http-insecure' | 'https' = 'loopback';
 let diagnostics: { status: 'idle' | 'loading' | 'error' | 'loaded'; error?: string; data?: AdminDiagnostics; displaySessionIds?: string[] } = { status: 'idle' };
 let stopVoice: (() => void) | undefined;
-const id = () => crypto.randomUUID();
+const id = () => requestId();
 
 function render() {
   document.body.classList.toggle('display-mode', displayMode);
-  if (!role || (!displayMode && role !== 'owner')) { stopVoice?.(); stopVoice = undefined; app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
+  if (restoredOwnerConsentPending && role === 'owner' && !displayMode && transportMode === 'http-insecure') { app.innerHTML = renderRestoredOwnerConsent(); const checkbox = app.querySelector<HTMLInputElement>('[name="http-risk-acknowledged"]')!; const button = app.querySelector<HTMLButtonElement>('[data-http-consent-continue]')!; checkbox.addEventListener('change', () => { button.disabled = !checkbox.checked; }); button.addEventListener('click', () => { if (!checkbox.checked) return; restoredOwnerConsentPending = false; render(); }); return; }
+  if (!role || (!displayMode && role !== 'owner')) { stopVoice?.(); stopVoice = undefined; app.innerHTML = displayMode ? renderDisplayGate({ error: gateError, status: gateStatus, pending: gatePending }) : renderOwnerGate({ mode: authMode, transport: transportMode, error: gateError || (role === 'display' ? 'Display access is read-only. Sign in with an owner account.' : ''), status: gateStatus, pending: gatePending }); bindGate(); return; }
   if (!state) { app.textContent = 'Loading workspace…'; return; }
-  if (displayMode) { if (role === 'owner' && app.querySelector('.display-owner')) { mountDisplayWidgets(app, state.widgets); return; } stopVoice?.(); stopVoice = undefined; app.innerHTML = renderDisplay(state, demoMode, streamConnected, role === 'owner' ? 'owner' : 'display', ownerAutoAccess); mountDisplayWidgets(app, state.widgets); if (role === 'owner') stopVoice = mountVoice(app, csrf); return; }
-     app.innerHTML = renderAdmin(state, page, { demoMode, preferenceStatus, diagnostics, disconnected: !streamConnected, ownerAutoAccess, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } });
+  if (displayMode) { if (role === 'owner' && app.querySelector('.display-owner')) { mountDisplayWidgets(app, state.widgets); return; } stopVoice?.(); stopVoice = undefined; app.innerHTML = renderDisplay(state, demoMode, streamConnected, role === 'owner' ? 'owner' : 'display', ownerAutoAccess); if (elapsedTimer === undefined) elapsedTimer = window.setInterval(() => updateElapsedHint(app), 1000); mountDisplayWidgets(app, state.widgets); if (role === 'owner') stopVoice = mountVoice(app, csrf); return; }
+      app.innerHTML = `${transportMode === 'http-insecure' ? '<aside class="lan-http-warning" role="status"><strong>Insecure LAN HTTP:</strong> usernames, passwords, and session cookies can be intercepted and replayed. HTTPS is recommended.</aside>' : ''}${renderAdmin(state, page, { demoMode, preferenceStatus, diagnostics, disconnected: !streamConnected, ownerAutoAccess, pairing: { code: pairingCode, status: pairingStatus, error: pairingError, pending: pairingPending } })}`;
     bindAdminEvents(app, { page: next => { page = next; render(); if (['agents','displays','health'].includes(next)) void loadDiagnostics(); }, simulate: () => send('demo.simulate', {}), toggle: () => send('demo.set-enabled', { enabled: !state!.running }), command: runCommand, addWidget: () => send('widget.create', { widget: { version: 1, id: `custom-${Date.now()}`, title: 'Sample metric', content: { kind: 'metric', label: 'Sample metric', value: '0', caption: 'Created locally' }, placement: 'secondary', expiresAt: null } }), widgetAction: (type, payload) => { void send(type, payload); }, widgetSample: kind => sampleWidget(kind), reset: () => send('demo.reset', {}), displayStyle: async style => { await send('display.set-style', { style }); render(); }, preferences: savePreferences, pair: pairDisplay, revokeDisplay: revokeDisplay, revokeAgent: revokeAgent, logout });
 }
 async function loadDiagnostics() {
@@ -72,10 +77,10 @@ function sampleWidget(kind: SampleKind) {
 function bindGate() {
   app.querySelector<HTMLButtonElement>('[data-auth-mode]')?.addEventListener('click', event => { authMode = (event.currentTarget as HTMLElement).dataset.authMode as 'setup' | 'login'; gateError = ''; render(); });
   app.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('submit', async event => {
-    event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement); gatePending = true; gateError = ''; render();
+    event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement); if (transportMode === 'http-insecure' && form.get('http-risk-acknowledged') !== 'on') { gateError = 'Acknowledge the LAN HTTP interception risk before submitting credentials.'; render(); return; } gatePending = true; gateError = ''; render();
     try {
       const display = displayMode, mode = (event.currentTarget as HTMLFormElement).dataset.mode;
-      const result = await request(display ? '/api/display/redeem' : mode === 'setup' ? '/api/setup' : '/api/login', display ? { code: String(form.get('code') ?? '') } : mode === 'setup' ? { secret: String(form.get('secret') ?? ''), password: String(form.get('password') ?? '') } : { password: String(form.get('password') ?? '') });
+      const result = await request(display ? '/api/display/redeem' : mode === 'setup' ? '/api/setup' : '/api/login', display ? { code: String(form.get('code') ?? '') } : mode === 'setup' ? { secret: String(form.get('secret') ?? ''), username: String(form.get('username') ?? ''), password: String(form.get('password') ?? '') } : { username: String(form.get('username') ?? ''), password: String(form.get('password') ?? '') });
       role = result.role; csrf = result.csrf ?? ''; demoMode = result.demoEnabled === true; await loadState(); connect();
     } catch (error) { gateError = message(error); } finally { gatePending = false; render(); }
   });
@@ -87,7 +92,7 @@ async function request(path: string, body?: unknown, method?: string) {
   return result;
 }
 function message(error: unknown) { return error instanceof Error ? error.message : 'Network request failed'; }
-function unauthenticated() { stopVoice?.(); stopVoice = undefined; socket?.close(); role = null; state = null; csrf = ''; gateError = 'Your session expired. Please sign in again.'; render(); }
+function unauthenticated() { stopVoice?.(); stopVoice = undefined; socket?.close(); role = null; state = null; csrf = ''; restoredOwnerConsentPending = false; gateError = 'Your session expired. Please sign in again.'; render(); }
 async function loadState() { const snapshot = validSnapshot(await request('/api/state')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
 function connect() {
   clearTimeout(reconnectTimer); socket?.close();
@@ -121,7 +126,7 @@ async function pairDisplay() {
 async function logout() { try { await request('/api/logout', { csrf }); } catch { /* Session is cleared locally regardless. */ } unauthenticated(); }
 function notify(text: string) { const toast = app.querySelector<HTMLElement>('#toast'); if (!toast) return; toast.textContent = text; toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 3000); }
 async function start() {
-  try { const session = await bootstrapSession(request); role = session.role; csrf = session.csrf ?? ''; demoMode = session.demoEnabled === true; ownerAutoAccess = session.ownerAutoAccess === true; if (!role) { authMode = session.setupRequired ? 'setup' : 'login'; render(); return; } if (!displayMode && role !== 'owner') { gateError = 'Display access is read-only. Sign in with an owner account.'; authMode = 'login'; render(); return; } await loadState(); connect(); }
+  try { const session = await bootstrapSession(request); transportMode = session.transport?.mode ?? 'loopback'; role = session.role; restoredOwnerConsentPending = role === 'owner' && transportMode === 'http-insecure' && !displayMode; csrf = session.csrf ?? ''; demoMode = session.demoEnabled === true; ownerAutoAccess = session.ownerAutoAccess === true; if (!role) { restoredOwnerConsentPending = false; authMode = session.setupRequired ? 'setup' : session.identityUpgradeRequired ? 'upgrade' : 'login'; render(); return; } if (!displayMode && role !== 'owner') { restoredOwnerConsentPending = false; gateError = 'Display access is read-only. Sign in with an owner account.'; authMode = 'login'; render(); return; } await loadState(); connect(); }
   catch (error) { gateError = message(error); role = null; render(); }
 }
 void start();

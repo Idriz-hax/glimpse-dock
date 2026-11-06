@@ -1,14 +1,25 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createServer } from '../server/server.ts';
+import { createServer, validateListenerConfig } from '../server/server.ts';
 import { ErrorResponseSchema } from '../src/shared/protocol.ts';
 
 describe('backend', () => {
+  it('defaults to loopback and rejects unconfigured LAN listeners', () => {
+    expect(validateListenerConfig({}).host).toBe('127.0.0.1');
+    expect(() => validateListenerConfig({ HOST: '0.0.0.0' })).toThrow();
+  });
+  it('requires explicit insecure HTTP opt-in and exact listener authority', () => {
+    const env = { GLIMPSE_LAN_MODE: 'http', GLIMPSE_TRUSTED_CIDR: '192.168.1.0/24', HOST: '192.168.1.8', PORT: '4174', GLIMPSE_LAN_ORIGIN: 'http://192.168.1.8:4174', GLIMPSE_LAN_HTTP_INSECURE: '1' } as NodeJS.ProcessEnv;
+    const interfaces = { en0: [{ address: '192.168.1.8' }] } as any;
+    expect(validateListenerConfig(env, interfaces).lan).toBe(true);
+    expect(() => validateListenerConfig({ ...env, GLIMPSE_LAN_HTTP_INSECURE: undefined }, interfaces)).toThrow();
+    expect(() => validateListenerConfig({ ...env, GLIMPSE_LAN_ORIGIN: 'http://192.168.1.8' }, interfaces)).toThrow();
+  });
   let app: Awaited<ReturnType<typeof createServer>> | undefined;
   afterEach(async () => { await app?.close(); app = undefined; });
   it('serves health and requires out-of-band bootstrap setup', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
     expect((await app.inject('/health')).statusCode).toBe(200);
-    expect((await app.inject({ method: 'POST', url: '/api/setup', payload: { secret: 'wrong', password: 'password123' } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: '/api/setup', payload: { secret: 'wrong', username: 'owner', password: 'password123' } })).statusCode).toBe(403);
   });
   it('requires authentication for mutation', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
@@ -17,13 +28,13 @@ describe('backend', () => {
   });
   it('returns structured versioned protocol errors for invalid input', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const response = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'weak' } });
+    const response = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'weak' } });
     expect(ErrorResponseSchema.safeParse(response.json()).success).toBe(true);
   });
   it('exposes only the current browser role and CSRF token for the session', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
     expect((await app.inject('/api/session')).json()).toMatchObject({ role: null, demoEnabled: false, setupRequired: true });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const session = (await app.inject({ url: '/api/session', headers: { cookie } })).json();
     expect(session.role).toBe('owner');
@@ -31,13 +42,13 @@ describe('backend', () => {
   });
   it('rejects weak setup passwords and requests without an exact browser Origin', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    expect((await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'test-secret',password:'weak'}})).statusCode).toBe(400);
-    expect((await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://evil.test'},payload:{secret:'test-secret',password:'long-enough-password'}})).statusCode).toBe(403);
-    expect((await app.inject({method:'POST',url:'/api/setup',payload:{secret:'test-secret',password:'long-enough-password'}})).statusCode).toBe(403);
+    expect((await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'test-secret',username: 'owner', password:'weak'}})).statusCode).toBe(400);
+    expect((await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://evil.test'},payload:{secret:'test-secret',username: 'owner', password:'long-enough-password'}})).statusCode).toBe(403);
+    expect((await app.inject({method:'POST',url:'/api/setup',payload:{secret:'test-secret',username: 'owner', password:'long-enough-password'}})).statusCode).toBe(403);
   });
   it('rejects ambiguous agent and owner credentials', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup=await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'test-secret',password:'long-enough-password'}});
+    const setup=await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'test-secret',username: 'owner', password:'long-enough-password'}});
     const cookie=String(setup.headers['set-cookie']).split(';')[0];
     const agent=await app.inject({method:'POST',url:'/api/agents',headers:{cookie,origin:'http://localhost:80'},payload:{csrf:setup.json().csrf}});
     expect(agent.statusCode).toBe(200);
@@ -46,14 +57,14 @@ describe('backend', () => {
   });
   it('rejects a matching attacker Origin and Host on owner mutation routes', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const result = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://attacker.test', host: 'attacker.test' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'origin', type: 'task.update', payload: { task: 'cross-site' } } });
     expect(result.statusCode).toBe(403);
   });
   it('keeps fake activity disabled by default and runs Demo commands only when explicitly enabled', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const denied = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'demo-disabled', type: 'demo.simulate', payload: {} } });
     expect(denied.statusCode).toBe(403);
@@ -61,7 +72,7 @@ describe('backend', () => {
     await app.close();
 
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', demo: true });
-    const demoSetup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const demoSetup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const demoCookie = String(demoSetup.headers['set-cookie']).split(';')[0];
     const demoState = (await app.inject({ url: '/api/state', headers: { cookie: demoCookie } })).json();
     expect(demoState).toMatchObject({ source: 'demo', state: { agent: 'Hermes (Demo)' } });
@@ -69,7 +80,7 @@ describe('backend', () => {
   });
   it('applies allowlisted metric commands instead of accepting them as no-ops', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', demo: true });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const result = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'metric', type: 'metric.set-value', payload: { id: 'tasks', value: 45 } } });
     expect(result.statusCode).toBe(200);
@@ -77,7 +88,7 @@ describe('backend', () => {
   });
   it('allows owners to change display style and persists the state shape defaults', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
     const changed = await send('display.set-style', { style: 'ambient' });
@@ -86,7 +97,7 @@ describe('backend', () => {
   });
   it('rejects display style changes from an agent principal', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
     await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'owner-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tasks', title: 'Tasks', content: { kind: 'metric', label: 'Tasks', value: '0' }, placement: 'primary', expiresAt: null } } } });
@@ -95,14 +106,14 @@ describe('backend', () => {
   });
   it('persists accepted commands before reporting success and denies display writes', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     expect(setup.statusCode).toBe(200);
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const csrf = setup.json().csrf;
-    const write = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf, v: 1, requestId: 'one', type: 'task.update', payload: { task: 'persisted' } } });
+    const write = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf, v: 1, requestId: 'one', type: 'task.update', payload: { task: 'persisted', toolCategory: 'code' } } });
     expect(write.statusCode).toBe(200);
     const state = await app.inject({ url: '/api/state', headers: { cookie } });
-    expect(state.json().state.task).toBe('persisted');
+    expect(state.json().state).toMatchObject({ task: 'persisted', toolCategory: 'code' });
     expect(state.json().revision).toBe(1);
     const paired = await app.inject({ method: 'POST', url: '/api/display/pair', headers: { cookie, origin:'http://localhost:80' }, payload: { csrf } });
     expect(paired.headers['set-cookie']).toBeUndefined();
@@ -115,7 +126,7 @@ describe('backend', () => {
   it('rejects invalid activity transitions without revising state and keeps task commands coherent', async () => {
     let clock = 1_700_000_000_000;
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', now: () => clock });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
     await send('state.set-activity', { activity: 'thinking' });
@@ -132,10 +143,14 @@ describe('backend', () => {
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(before);
     expect((await send('task.update', { task: 'Next task' })).statusCode).toBe(200);
     expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state).toMatchObject({ task: 'Next task', activity: 'thinking', progress: null, turnStartedAt: clock });
+    await send('task.update', { task: 'Tool task', toolCategory: 'shell' });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.toolCategory).toBe('shell');
+    await send('task.update', { task: 'Unknown tool' });
+    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.toolCategory).toBeNull();
   });
   it('rejects completion from idle or error without revising state but allows repeated completion', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', now: () => 1_700_000_000_000 });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
     const idle = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
@@ -154,7 +169,7 @@ describe('backend', () => {
   });
   it('issues stable agent IDs and makes widget mutation retries idempotent', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const created = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
     expect(created.json()).toMatchObject({ id: expect.any(String), secret: expect.any(String) });
@@ -186,7 +201,7 @@ describe('backend', () => {
   });
   it('lets the owner create, update, hide, and remove an agent-owned widget', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
     const send = (requestId: string, type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId, type, payload } });
@@ -200,7 +215,7 @@ describe('backend', () => {
   });
   it('creates and updates Admin sample widgets as the owner principal', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (requestId: string, type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId, type, payload } });
     const sample = { version: 1, id: 'test-text', title: 'Text sample', content: { kind: 'text', text: 'sample' }, placement: 'secondary', expiresAt: null };
@@ -210,7 +225,7 @@ describe('backend', () => {
   });
   it('authorizes legacy metric updates through widget ownership', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
     const ownerCreate = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'owner-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tasks', title: 'Tasks', content: { kind: 'metric', label: 'Tasks', value: '0' }, placement: 'primary', expiresAt: null } } } });

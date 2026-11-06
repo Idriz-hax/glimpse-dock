@@ -39,8 +39,8 @@ describe('local auto-access', () => {
     app = await createServer({ database: ':memory:', localAutoAccess: 'owner', bootstrapSecret: 'secret' });
     const headers = { origin: 'http://localhost:80', host: 'localhost:80' };
     expect((await app.inject({ method: 'POST', url: '/api/local-auto-access', headers })).statusCode).toBe(403);
-    await app.inject({ method: 'POST', url: '/api/setup', headers, payload: { secret: 'secret', password: 'long-enough-password' } });
-    const setupCookie = String((await app.inject({ method: 'POST', url: '/api/login', headers, payload: { password: 'long-enough-password' } })).headers['set-cookie']).split(';')[0];
+    await app.inject({ method: 'POST', url: '/api/setup', headers, payload: { secret: 'secret', username: 'owner', password: 'long-enough-password' } });
+    const setupCookie = String((await app.inject({ method: 'POST', url: '/api/login', headers, payload: { username: 'owner', password: 'long-enough-password' } })).headers['set-cookie']).split(';')[0];
     const existing = new Set((await app.inject({ url: '/api/sessions', headers: { cookie: setupCookie } })).json().sessions.map((session: { id: string }) => session.id));
     const access = await app.inject({ method: 'POST', url: '/api/local-auto-access', headers });
     expect(access.statusCode).toBe(200);
@@ -58,7 +58,7 @@ describe('local auto-access', () => {
   it('issues a one-hour display session that the owner can revoke', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'secret', localAutoAccess: 'display' });
     const headers = { origin: 'http://localhost:80', host: 'localhost:80' };
-    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers, payload: { secret: 'secret', password: 'long-enough-password' } });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers, payload: { secret: 'secret', username: 'owner', password: 'long-enough-password' } });
     const ownerCookie = String(setup.headers['set-cookie']).split(';')[0];
     const access = await app.inject({ method: 'POST', url: '/api/local-auto-access', headers });
     const displayCookie = String(access.headers['set-cookie']).split(';')[0];

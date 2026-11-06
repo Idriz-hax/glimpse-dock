@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { renderWidget } from '../src/display/widgets';
 import type { Widget } from '../src/shared/protocol';
 
@@ -63,7 +65,16 @@ describe('renderWidget', () => {
     ] as const;
     const svg = renderWidget(widget('visual', { kind: 'visual', primitives: [...primitives] }))!.children[1];
     expect(svg.children.map(child => child.tagName)).toEqual(['text', 'rect', 'circle', 'line']);
-    expect(svg.children.map(child => child.getAttribute('fill') ?? child.getAttribute('stroke'))).toEqual(['#78d8e8', '#7be0b2', '#83aaff', '#f2bd70']);
+    expect(svg.children.map(child => child.getAttribute('fill') ?? child.getAttribute('stroke'))).toEqual([
+      'var(--widget-accent)', 'var(--widget-success)', 'var(--widget-blue)', 'var(--widget-warning)',
+    ]);
     expect(svg.children[0].attributes).toMatchObject({ x: '1', y: '2', 'font-size': '3' });
+  });
+
+  it('uses only widget color tokens defined by the central palette', () => {
+    const renderer = readFileSync(resolve(__dirname, '../src/display/widgets.ts'), 'utf8');
+    const palette = readFileSync(resolve(__dirname, '../src/style.css'), 'utf8');
+    const tokens = [...renderer.matchAll(/var\((--[\w-]+)\)/g)].map((match) => match[1]);
+    for (const token of tokens) expect(palette).toMatch(new RegExp(`${token}:`));
   });
 });

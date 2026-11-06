@@ -26,7 +26,7 @@ function fakes() {
   };
 }
 async function owner(app: Awaited<ReturnType<typeof createServer>>) {
-  const response = await app.inject({ method: 'POST', url: '/api/setup', headers: ORIGIN, payload: { secret: 'bootstrap', password: 'long-enough-password' } });
+  const response = await app.inject({ method: 'POST', url: '/api/setup', headers: ORIGIN, payload: { secret: 'bootstrap', username: 'owner', password: 'long-enough-password' } });
   return { cookie: String(response.headers['set-cookie']).split(';')[0]!, csrf: response.json().csrf };
 }
 
@@ -134,7 +134,7 @@ describe('owner voice websocket route', () => {
     await app.listen({ host: '127.0.0.1', port: 0 });
     const address = app.server.address() as import('node:net').AddressInfo;
     const base = `http://127.0.0.1:${address.port}`;
-    const setup = await fetch(`${base}/api/setup`, { method:'POST', headers:{ origin:base, 'content-type':'application/json' }, body:JSON.stringify({ secret:'bootstrap', password:'long-enough-password' }) });
+    const setup = await fetch(`${base}/api/setup`, { method:'POST', headers:{ origin:base, 'content-type':'application/json' }, body:JSON.stringify({ secret:'bootstrap', username:'owner', password:'long-enough-password' }) });
     const cookie = setup.headers.get('set-cookie')!.split(';')[0]!;
     const csrf = (await setup.json() as any).csrf;
     const post = (url: string, payload: object) => fetch(`${base}${url}`, { method:'POST', headers:{ cookie, origin:base, 'content-type':'application/json' }, body:JSON.stringify({ csrf, ...payload }) });
@@ -186,7 +186,7 @@ describe('owner voice websocket route', () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients as any });
     await app.listen({ host:'127.0.0.1', port:0 });
     const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
-    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',password:'long-enough-password'})});
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',username:'owner',password:'long-enough-password'})});
     const cookie=setup.headers.get('set-cookie')!.split(';')[0]!, csrf=(await setup.json() as any).csrf;
     const post=(url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
     await post('/api/voice/settings',{enabled:true,wakeModel:'hey_hermes',voice:'en_US-lessac-medium'}); await post('/api/voice/session',{});
@@ -206,9 +206,9 @@ describe('owner voice websocket route', () => {
     app=await createServer({database:':memory:',bootstrapSecret:'bootstrap',voiceClients:clients as any});
     await app.listen({host:'127.0.0.1',port:0});
     const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
-    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',password:'long-enough-password'})});
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',username:'owner',password:'long-enough-password'})});
     const cookie=setup.headers.get('set-cookie')!.split(';')[0]!, csrf=(await setup.json() as any).csrf;
-    const login=await fetch(`${base}/api/login`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({password:'long-enough-password'})});
+    const login=await fetch(`${base}/api/login`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({username:'owner',password:'long-enough-password'})});
     const secondCookie=login.headers.get('set-cookie')!.split(';')[0]!, secondCsrf=(await login.json() as any).csrf;
     const post=(url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
     await post('/api/voice/settings',{enabled:true,wakeModel:'hey_hermes',voice:'en_US-lessac-medium'}); await post('/api/voice/session',{});
@@ -236,7 +236,7 @@ describe('owner voice websocket route', () => {
     app=await createServer({database:':memory:',bootstrapSecret:'bootstrap',voiceClients:clients as any,now:()=>Date.now()+86_400_001});
     await app.listen({host:'127.0.0.1',port:0});
     const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
-    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',password:'long-enough-password'})});
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',username:'owner',password:'long-enough-password'})});
     const cookie=setup.headers.get('set-cookie')!.split(';')[0]!, csrf=(await setup.json() as any).csrf;
     const post=(url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
     await post('/api/voice/settings',{enabled:true,wakeModel:'hey_hermes',voice:'en_US-lessac-medium'}); await post('/api/voice/session',{});
@@ -256,7 +256,7 @@ describe('owner voice websocket route', () => {
       ws.once('close', code => resolve(code));
     });
     expect(await attempt({ origin: base })).toBe(403);
-    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret:'bootstrap', password:'long-enough-password' }) });
+    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret:'bootstrap', username:'owner', password:'long-enough-password' }) });
     const cookie = setup.headers.get('set-cookie')!.split(';')[0]!;
     const csrf = (await setup.json() as any).csrf;
     expect(await attempt({ cookie, origin: 'http://evil.example' })).toBe(403);

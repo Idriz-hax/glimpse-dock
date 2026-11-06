@@ -52,15 +52,20 @@ describe('Demo adapter', () => {
   });
 
   it('starts a fresh task when resuming or simulating from a terminal state', () => {
-    const completed = { ...createDemoState(), activity: 'completed' as const, progress: 100, task: 'Finished task', turnStartedAt: null };
+    const completed = { ...createDemoState(), activity: 'completed' as const, progress: 100, task: 'Finished task', toolCategory: 'shell' as const, turnStartedAt: null };
     const errored = { ...completed, activity: 'error' as const };
     vi.spyOn(Math, 'random').mockReturnValue(1 / 4);
     for (const terminal of [completed, errored]) {
       expect(transitionDemo(terminal, { v: 1, requestId: 'resume', type: 'demo.set-enabled', payload: { enabled: true } }))
-        .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace', running: true });
+        .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace', toolCategory: null, running: true });
       expect(transitionDemo(terminal, { v: 1, requestId: 'resume', type: 'demo.set-enabled', payload: { enabled: true } }, 789).turnStartedAt).toBe(789);
       expect(transitionDemo(terminal, { v: 1, requestId: 'simulate', type: 'demo.simulate', payload: {} }))
-        .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace' });
+        .toMatchObject({ activity: 'thinking', progress: 0, task: 'Preparing visual summary for the workspace', toolCategory: null });
     }
+  });
+
+  it('clears a tool category when resetting the demo', () => {
+    const state = { ...createDemoState(), toolCategory: 'search' as const };
+    expect(transitionDemo(state, { v: 1, requestId: 'reset', type: 'demo.reset', payload: {} }).toolCategory).toBeNull();
   });
 });

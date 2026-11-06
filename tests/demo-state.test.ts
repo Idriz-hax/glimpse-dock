@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { initialState, loadState, maxLogId, validateState } from '../src/demo-state';
 
 describe('demo state validation', () => {
+  it('defaults the demo tool category to null and validates its allowlist', () => {
+    expect(initialState().toolCategory).toBeNull();
+    const { toolCategory: _toolCategory, ...legacy } = initialState();
+    expect(validateState(legacy)?.toolCategory).toBeNull();
+    expect(validateState({ ...initialState(), toolCategory: 'browser' })).toBeNull();
+  });
   it('advances the local log id after receiving newer synchronized logs', () => {
     expect(maxLogId([{ id: 12 }], 3)).toBe(12);
     expect(maxLogId([{ id: 2 }], 12)).toBe(12);

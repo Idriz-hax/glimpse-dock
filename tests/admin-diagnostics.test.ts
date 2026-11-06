@@ -9,7 +9,7 @@ describe('admin diagnostics', () => {
   afterEach(async () => { await app?.close(); app = undefined; });
   it('returns valid empty diagnostics for an owner with no operational events', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'secret' });
-    const owner = await app.inject({ method:'POST', url:'/api/setup', headers:{origin:'http://localhost:80'}, payload:{secret:'secret',password:'long-enough-password'} });
+    const owner = await app.inject({ method:'POST', url:'/api/setup', headers:{origin:'http://localhost:80'}, payload:{secret:'secret',username:'owner',password:'long-enough-password'} });
     const cookie=String(owner.headers['set-cookie']).split(';')[0];
     const response=await app.inject({url:'/api/admin/diagnostics',headers:{cookie}});
     expect(response.statusCode).toBe(200);
@@ -25,7 +25,7 @@ describe('admin diagnostics', () => {
   it('is owner-only and reports bounded safe operational facts', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'secret' });
     const origin = { origin: 'http://localhost:80' };
-    const owner = await app.inject({ method: 'POST', url: '/api/setup', headers: origin, payload: { secret: 'secret', password: 'long-enough-password' } });
+    const owner = await app.inject({ method: 'POST', url: '/api/setup', headers: origin, payload: { secret: 'secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(owner.headers['set-cookie']).split(';')[0];
     expect((await app.inject({ url: '/api/admin/diagnostics' })).statusCode).toBe(403);
     expect((await app.inject({ url:'/api/admin/diagnostics', headers:{cookie, origin:'http://evil.example'} })).statusCode).toBe(403);
@@ -51,7 +51,7 @@ describe('admin diagnostics', () => {
   it('reports accepted activity and current paired session expiry state', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'secret', voiceClients:{hermes:{createSession:async()=>'',startRun:async()=>{},stopRun:async()=>{},readRunEvents:async()=>[]},wyoming:{listWakeModels:async()=>[],listVoices:async()=>[],detectWake:async()=>false,transcribe:async()=>'',synthesize:async()=>Buffer.alloc(0)}} });
     const origin={origin:'http://localhost:80'};
-    const login=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',password:'long-enough-password'}});
+    const login=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
     const cookie=String(login.headers['set-cookie']).split(';')[0];
     await app.inject({method:'POST',url:'/api/command',headers:{...origin,cookie},payload:{csrf:login.json().csrf,command:{v:1,requestId:'safe',type:'task.update',payload:{task:'private prompt'}}}});
     const pair=await app.inject({method:'POST',url:'/api/display/pair',headers:{...origin,cookie},payload:{csrf:login.json().csrf}});
@@ -73,7 +73,7 @@ describe('admin diagnostics', () => {
     try {
       app=await createServer({database,bootstrapSecret:'secret'});
       const origin={origin:'http://localhost:80'};
-      const setup=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',password:'long-enough-password'}});
+      const setup=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
       const cookie=String(setup.headers['set-cookie']).split(';')[0];
       for(let batch=0;batch<3;batch++) {
         if(batch>0) { await app.close(); app=await createServer({database}); }
