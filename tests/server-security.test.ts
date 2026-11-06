@@ -1,20 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createServer } from '../server/server.ts';
+import { createServer, validateListenerConfig } from '../server/server.ts';
 import { ErrorResponseSchema } from '../src/shared/protocol.ts';
+import Database from 'better-sqlite3';
+import { scrypt as scryptCallback, randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { networkInterfaces } from 'node:os';
+const scrypt = promisify(scryptCallback) as (password: string, salt: string, length: number) => Promise<Buffer>;
 
 describe('server security', () => {
   let app: Awaited<ReturnType<typeof createServer>> | undefined;
-  afterEach(async () => { await app?.close(); app = undefined; vi.restoreAllMocks(); vi.useRealTimers(); });
+  let tempDirectory: string | undefined;
+  afterEach(async () => { await app?.close(); app = undefined; if(tempDirectory) rmSync(tempDirectory,{recursive:true,force:true}); tempDirectory=undefined; vi.restoreAllMocks(); vi.useRealTimers(); });
   it('limits setup/login/redeem per route', async () => {
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
-    for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'bad',password:'long-enough-password'}});
-    const limited = await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'bad',password:'long-enough-password'}});
+    for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'bad',username:'owner',password:'long-enough-password'}});
+    const limited = await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'bad',username:'owner',password:'long-enough-password'}});
     expect(limited.statusCode).toBe(429);
     expect(ErrorResponseSchema.safeParse(limited.json()).success).toBe(true);
     expect(limited.json().error.code).toBe('RATE_LIMITED');
     expect(limited.json().error.message).toMatch(/wait|retry/i);
-    for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80'},payload:{password:'long-enough-password'}});
-    expect((await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80'},payload:{password:'long-enough-password'}})).statusCode).toBe(429);
+    for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80'},payload:{username: 'owner', password:'long-enough-password'}});
+    expect((await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80'},payload:{username: 'owner', password:'long-enough-password'}})).statusCode).toBe(429);
     for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/display/redeem',headers:{origin:'http://localhost:80'},payload:{code:'bad'}});
     const redeemLimited=await app.inject({method:'POST',url:'/api/display/redeem',headers:{origin:'http://localhost:80'},payload:{code:'bad'}});
     expect(redeemLimited.statusCode).toBe(429);
@@ -22,16 +31,72 @@ describe('server security', () => {
     expect(redeemLimited.json().error.code).toBe('RATE_LIMITED');
     expect(redeemLimited.json().error.message).toMatch(/wait|retry/i);
   });
+  it('upgrades a password-only database locally without changing hash or existing sessions', async () => {
+    tempDirectory=mkdtempSync(join(tmpdir(),'glimpse-auth-')); const dbPath=join(tempDirectory,'legacy.sqlite');
+    app=await createServer({database:dbPath,bootstrapSecret:'secret'});
+    const db = new Database(dbPath);
+    const salt='legacy-salt'; db.prepare("INSERT INTO kv(key,value) VALUES('password',?)").run(`${salt}:${(await scrypt('long-enough-password',salt,64)).toString('hex')}`);
+    db.prepare("INSERT INTO sessions VALUES('existing-digest','owner','existing-csrf',9999999999999)").run();
+    const beforeHash=db.prepare("SELECT value FROM kv WHERE key='password'").get() as any;
+    const beforeSessions=db.prepare('SELECT * FROM sessions ORDER BY digest').all();
+    const upgraded=await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80'},payload:{username:'  Owner.Name ',password:'long-enough-password'}});
+    expect(upgraded.statusCode).toBe(200);
+    expect((db.prepare("SELECT value FROM kv WHERE key='username'").get() as any).value).toBe('owner.name');
+    expect(db.prepare("SELECT value FROM kv WHERE key='password'").get()).toEqual(beforeHash);
+    expect(db.prepare('SELECT * FROM sessions WHERE digest=?').get('existing-digest')).toEqual(beforeSessions[0]);
+    db.close();
+    await app.close(); app=await createServer({database:dbPath,bootstrapSecret:'secret'});
+    const reopened=await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80'},payload:{username:'OWNER.NAME',password:'long-enough-password'}});
+    expect(reopened.statusCode).toBe(200);
+  });
+  it('requires valid username for setup and username plus password for login', async () => {
+    app=await createServer({database:':memory:',bootstrapSecret:'secret'});
+    const headers={origin:'http://localhost:80'};
+    expect((await app.inject({method:'POST',url:'/api/setup',headers,payload:{secret:'secret',username:'x',password:'long-enough-password'}})).statusCode).toBe(400);
+    expect((await app.inject({method:'POST',url:'/api/setup',headers,payload:{secret:'secret',username:'owner',password:'long-enough-password'}})).statusCode).toBe(200);
+    expect((await app.inject({method:'POST',url:'/api/login',headers,payload:{password:'long-enough-password'}})).statusCode).toBe(400);
+    expect((await app.inject({method:'POST',url:'/api/login',headers,payload:{username:'other',password:'long-enough-password'}})).statusCode).toBe(403);
+    expect((await app.inject({method:'POST',url:'/api/login',headers,payload:{username:' OWNER ',password:'long-enough-password'}})).statusCode).toBe(200);
+  });
+  it('does not allow a remote request to bootstrap or perform the legacy upgrade', async () => {
+    app=await createServer({database:':memory:',bootstrapSecret:'secret'});
+    const setup=await app.inject({method:'POST',url:'/api/setup',remoteAddress:'192.0.2.5',payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
+    expect(setup.statusCode).not.toBe(200);
+  });
+  it('limits LAN admission to explicit Admin routes and exact authority/origin', async () => {
+    const listener = validateListenerConfig({ GLIMPSE_LAN_MODE: 'http', GLIMPSE_LAN_HTTP_INSECURE: '1', HOST: '192.168.1.8', PORT: '4174', GLIMPSE_TRUSTED_CIDR: '192.168.1.0/24', GLIMPSE_LAN_ORIGIN: 'http://192.168.1.8:4174' } as NodeJS.ProcessEnv, { en0: [{ address: '192.168.1.8' }] } as any);
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'secret', listener });
+    const remote = { remoteAddress: '192.168.1.22', headers: { host: '192.168.1.8:4174', origin: 'http://192.168.1.8:4174' } };
+    expect((await app.inject({ url: '/api/setup', method:'POST', payload:{secret:'secret',username:'owner',password:'long-enough-password'}, ...remote })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/display/redeem', method: 'POST', payload: { code: 'x' }, ...remote })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/voice/status', ...remote })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/session', ...remote })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/session', ...remote, headers: { ...remote.headers, host: 'attacker.test' } })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/session', remoteAddress:'127.0.0.1', headers:{ host:'attacker.test' } })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/session', remoteAddress:'127.0.0.1', headers:{ host:'192.168.1.8:4174' } })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/session', remoteAddress:'::1', headers:{ host:'192.168.1.8:4174' } })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/session', ...remote, remoteAddress:'192.168.2.2' })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/login', method:'POST', payload:{username:'owner',password:'long-enough-password'}, ...remote, headers:{...remote.headers,origin:'http://evil.test'} })).statusCode).toBe(403);
+    await app.inject({method:'POST',url:'/api/setup',headers:{host:'192.168.1.8:4174',origin:'http://localhost:80'},payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
+    const login=await app.inject({method:'POST',url:'/api/login',...remote,payload:{username:'owner',password:'long-enough-password'}});
+    expect(login.statusCode).toBe(200);
+    expect(String(login.headers['set-cookie'])).not.toMatch(/; Secure/i);
+    const cookie=String(login.headers['set-cookie']).split(';')[0];
+    expect((await app.inject({url:'/api/state',...remote,headers:{...remote.headers,cookie}})).statusCode).toBe(200);
+    const logout=await app.inject({method:'POST',url:'/api/logout',...remote,headers:{...remote.headers,cookie},payload:{csrf:login.json().csrf}});
+    expect(logout.statusCode).toBe(200);
+    expect(String(logout.headers['set-cookie'])).not.toMatch(/; Secure/i);
+  });
   it('intentionally shares unauthenticated limits across loopback clients', async () => {
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
-    for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80','x-forwarded-for':`192.0.2.${i+1}`},payload:{password:'long-enough-password'}});
-    const otherClient=await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80','x-forwarded-for':'198.51.100.7'},payload:{password:'long-enough-password'}});
+    for(let i=0;i<5;i++) await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80','x-forwarded-for':`192.0.2.${i+1}`},payload:{username: 'owner', password:'long-enough-password'}});
+    const otherClient=await app.inject({method:'POST',url:'/api/login',headers:{origin:'http://localhost:80','x-forwarded-for':'198.51.100.7'},payload:{username: 'owner', password:'long-enough-password'}});
     expect(otherClient.statusCode).toBe(429);
     expect(ErrorResponseSchema.safeParse(otherClient.json()).success).toBe(true);
   });
   it('logs out authenticated sessions with CSRF and invalidates their cookie', async()=>{
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
-    const login=await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'secret',password:'long-enough-password'}});
+    const login=await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
     const cookie=String(login.headers['set-cookie']).split(';')[0];
     expect((await app.inject({method:'POST',url:'/api/logout',headers:{cookie,origin:'http://localhost:80'},payload:{csrf:login.json().csrf}})).statusCode).toBe(200);
     expect((await app.inject({url:'/api/state',headers:{cookie}})).statusCode).toBe(401);
@@ -39,7 +104,7 @@ describe('server security', () => {
   it('allows only the owner to save complete display preferences', async () => {
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
     const origin={origin:'http://localhost:80'};
-    const owner=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',password:'long-enough-password'}});
+    const owner=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
     const cookie=String(owner.headers['set-cookie']).split(';')[0];
     const preferences={scale:'large',reducedMotion:true,intensity:'vivid',showClock:false,showWidgets:false,layout:'compact'};
     const command={v:1,requestId:'prefs-1',type:'display.preferences.set',payload:{preferences}};
@@ -55,7 +120,7 @@ describe('server security', () => {
   });
   it('lists and revokes display sessions and pairing code is one-time', async()=>{
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
-    const owner=await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'secret',password:'long-enough-password'}});
+    const owner=await app.inject({method:'POST',url:'/api/setup',headers:{origin:'http://localhost:80'},payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
     const cookie=String(owner.headers['set-cookie']).split(';')[0], csrf=owner.json().csrf;
     const pair=await app.inject({method:'POST',url:'/api/display/pair',headers:{cookie,origin:'http://localhost:80'},payload:{csrf}});
     const redeemed=await app.inject({method:'POST',url:'/api/display/redeem',headers:{origin:'http://localhost:80'},payload:{code:pair.json().code}});
@@ -71,7 +136,7 @@ describe('server security', () => {
   it('revokes agents by public identity while preserving owner authorization', async()=>{
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
     const origin={origin:'http://localhost:80'};
-    const owner=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',password:'long-enough-password'}});
+    const owner=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
     const cookie=String(owner.headers['set-cookie']).split(';')[0];
     const agent=await app.inject({method:'POST',url:'/api/agents',headers:{...origin,cookie},payload:{csrf:owner.json().csrf}});
     const pair=await app.inject({method:'POST',url:'/api/display/pair',headers:{...origin,cookie},payload:{csrf:owner.json().csrf}});
@@ -88,7 +153,7 @@ describe('server security', () => {
     vi.spyOn(Date,'now').mockImplementation(()=>time);
     app=await createServer({database:':memory:',bootstrapSecret:'secret'});
     const origin={origin:'http://localhost:80'};
-    const owner=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',password:'long-enough-password'}});
+    const owner=await app.inject({method:'POST',url:'/api/setup',headers:origin,payload:{secret:'secret',username:'owner',password:'long-enough-password'}});
     const cookie=String(owner.headers['set-cookie']).split(';')[0];
     const pair=await app.inject({method:'POST',url:'/api/display/pair',headers:{...origin,cookie},payload:{csrf:owner.json().csrf}});
     time=Date.parse('2026-01-01T00:04:59.999Z');

@@ -14,7 +14,7 @@ describe('WebSocket session security', () => {
     const address = app.server.address();
     if (!address || typeof address === 'string') throw new Error('Expected TCP listener');
     const base = `http://127.0.0.1:${address.port}`;
-    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'secret', password: 'long-enough-password' }) });
+    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'secret', username: 'owner', password: 'long-enough-password' }) });
     const ownerCookie = setup.headers.get('set-cookie')!.split(';')[0];
     const csrf = (await setup.json() as {csrf:string}).csrf;
     const pair = async () => {
@@ -48,7 +48,7 @@ describe('WebSocket session security', () => {
     const address = app.server.address();
     if (!address || typeof address === 'string') throw new Error('Expected TCP listener');
     const base = `http://127.0.0.1:${address.port}`;
-    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'secret', password: 'long-enough-password' }) });
+    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'secret', username: 'owner', password: 'long-enough-password' }) });
     const cookie = setup.headers.get('set-cookie')!.split(';')[0];
     const socket = new WebSocket(`${base.replace('http:', 'ws:')}/api/stream`, { headers: { cookie, origin: base } });
     const snapshot = new Promise<void>(resolve => socket.once('message', () => resolve()));
@@ -66,7 +66,7 @@ describe('WebSocket session security', () => {
     const address = app.server.address();
     if (!address || typeof address === 'string') throw new Error('Expected TCP listener');
     const base = `http://127.0.0.1:${address.port}`;
-    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'secret', password: 'long-enough-password' }) });
+    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'secret', username: 'owner', password: 'long-enough-password' }) });
     const cookie = setup.headers.get('set-cookie')!.split(';')[0];
     const raw = net.connect(address.port, '127.0.0.1');
     await new Promise<void>(resolve => raw.once('connect', resolve));

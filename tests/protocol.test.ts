@@ -21,6 +21,15 @@ describe('protocol v1', () => {
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r1', type: 'metric.set-value', payload: { id: 'tasks', value: 42 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r2', type: 'state.set-progress', payload: { progress: 100 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r3', type: 'task.update', payload: { task: 'Summarize files' } }).success).toBe(true);
+    for (const toolCategory of ['shell', 'code', 'search']) {
+      expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'category', type: 'task.update', payload: { task: 'Working', toolCategory } }).success).toBe(true);
+      expect(ProtocolStateSchema.safeParse({ ...initialState(), toolCategory }).success).toBe(true);
+    }
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'category', type: 'task.update', payload: { task: 'Working', toolCategory: 'browser' } }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...initialState(), toolCategory: 'browser' }).success).toBe(false);
+    expect(ProtocolStateSchema.parse(initialState()).toolCategory).toBeNull();
+    const { toolCategory: _toolCategory, ...legacyState } = initialState();
+    expect(ProtocolStateSchema.parse(legacyState).toolCategory).toBeNull();
     expect(CommandRequestSchema.safeParse({ v: 2, requestId: 'r4', type: 'state.set-progress', payload: { progress: 20 } }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r5', type: 'state.set-progress', payload: { progress: 101 } }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r6', type: 'unknown', payload: {} }).success).toBe(false);
@@ -60,6 +69,13 @@ describe('protocol v1', () => {
     expect(ProtocolStateSchema.parse({ ...state, progress: null }).progress).toBeNull();
     const { progress: _progress, ...withoutProgress } = state;
     expect(ProtocolStateSchema.parse(withoutProgress).progress).toBeNull();
+    const { turnStartedAt: _turnStartedAt, ...withoutTurnStartedAt } = state;
+    expect(ProtocolStateSchema.parse(withoutTurnStartedAt).turnStartedAt).toBeNull();
+    expect(ProtocolStateSchema.parse({ ...state, turnStartedAt: 0 }).turnStartedAt).toBe(0);
+    expect(ProtocolStateSchema.parse({ ...state, turnStartedAt: null }).turnStartedAt).toBeNull();
+    for (const turnStartedAt of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(ProtocolStateSchema.safeParse({ ...state, turnStartedAt }).success).toBe(false);
+    }
   });
 
   it('validates structured errors', () => {

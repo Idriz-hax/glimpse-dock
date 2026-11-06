@@ -9,6 +9,26 @@ describe('Admin view', () => {
     expect(html).toContain('data-command="set progress to 85"');
     expect(html).toContain('data-command="complete task"');
   });
+  it('renders unknown progress without a bar, maps activity labels, and has explicit empty copy', () => {
+    const state = { ...initialState(), progress: null, logs: [], widgets: [] };
+    const html = renderAdmin(state, 'overview');
+    expect(html).not.toContain('role="progressbar"'); expect(html).not.toContain('null%');
+    expect(html).toContain('No recent events yet'); expect(html).not.toContain('v0.1.0');
+    for (const activity of ['thinking', 'tool-use', 'responding'] as const) expect(renderAdmin({ ...state, activity }, 'overview')).toContain('Active');
+    expect(renderAdmin({ ...state, activity: 'waiting' }, 'overview')).toContain('Waiting');
+    for (const [activity, label] of [['idle', 'Idle'], ['completed', 'Completed'], ['error', 'Error']] as const) expect(renderAdmin({ ...state, activity }, 'overview')).toContain(label);
+    expect(renderAdmin(state, 'overview', { demoMode: false, disconnected: true })).toContain('Disconnected');
+  });
+  it('describes unavailable controls honestly and labels only allowlisted tool context', () => {
+    const state = { ...initialState(), activity: 'tool-use' as const };
+    const unknown = renderAdmin(state, 'overview', { demoMode: false });
+    expect(unknown).toContain('Control availability could not be determined');
+    expect(unknown).toContain('Health &amp; diagnostics');
+    expect(renderAdmin({ ...state, toolCategory: 'shell' }, 'overview')).toContain('aria-label="Shell tool"');
+    expect(renderAdmin({ ...state, toolCategory: 'code' }, 'overview')).toContain('aria-label="Code tool"');
+    expect(renderAdmin({ ...state, toolCategory: 'search' }, 'overview')).toContain('aria-label="Search tool"');
+    expect(renderAdmin(state, 'overview')).toContain('aria-label="Tool activity"');
+  });
   it('opens the Visual Display in the current tab', () => {
     const html = renderAdmin(initialState(), 'overview');
     expect(html).toContain('href="/display"');

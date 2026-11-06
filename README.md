@@ -30,7 +30,7 @@ npm audit
 npm start                 # production static UI + API
 ```
 
-`npm run dev` runs Vite and the backend together. The backend defaults to `127.0.0.1:4174`, Vite proxies `/api` and `/api/stream`, and preview binds to `127.0.0.1`. `npm start` serves the built UI and API on loopback. Set `PORT` to change the port; the backend intentionally rejects non-loopback `HOST` values because TLS/LAN operation is not implemented. The SQLite database defaults to `glimpse-dock.sqlite`; set `GLIMPSE_DB` to use another protected writable location. Back up the database while the server is stopped.
+`npm run dev` runs Vite and the backend together. The backend defaults to `127.0.0.1:4174`, Vite proxies `/api` and `/api/stream`, and preview binds to `127.0.0.1`. `npm start` serves the built UI and API on loopback by default. Trusted-LAN Admin is opt-in; see [local deployment and security](docs/security/local-deployment.md) before configuring it. The SQLite database defaults to `glimpse-dock.sqlite`; set `GLIMPSE_DB` to use another protected writable location. Back up the database while the server is stopped.
 
 ## Project structure
 
@@ -43,7 +43,7 @@ npm start                 # production static UI + API
 - `docs/plans/2026-10-29-glimpse-dock-roadmap.md` — product roadmap.
 - `docs/architecture/0001-local-backend-authority.md` — backend/security decisions.
 
-The backend is designed as a single local process. HTTP is not encrypted; do not expose it to a LAN or public network. Database sessions and credentials are hashed, but local filesystem access remains trusted. Multi-user access, remote administration, TLS deployment, and a real Hermes adapter are future work.
+The backend is designed as a single process. Loopback HTTP is the default. Never expose HTTP mode to a LAN; LAN HTTP is explicitly insecure and credentials/session cookies may be intercepted. Use HTTPS for trusted-LAN Admin and restrict it with both the configured trusted CIDR and host firewall. Never forward the service to the public internet. Database sessions and credentials are hashed, but local filesystem access remains trusted.
 
 ## License
 

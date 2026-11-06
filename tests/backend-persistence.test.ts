@@ -28,7 +28,7 @@ describe('backend persistence and websocket integration', () => {
   async function setup(base: string) {
     const response = await fetch(`${base}/api/setup`, {
       method: 'POST', headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ secret: 'test-secret', password: 'long-enough-password' }),
+      body: JSON.stringify({ secret: 'test-secret', username: 'owner', password: 'long-enough-password' }),
     });
     const cookie = response.headers.get('set-cookie')!.split(';')[0];
     return { cookie, csrf: (await response.json() as { csrf: string }).csrf };
@@ -57,7 +57,7 @@ describe('backend persistence and websocket integration', () => {
     base = await start(database);
     const login = await fetch(`${base}/api/login`, {
       method: 'POST', headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ password: 'long-enough-password' }),
+      body: JSON.stringify({ username: 'owner', password: 'long-enough-password' }),
     });
     const loginCookie = login.headers.get('set-cookie')!.split(';')[0];
     const restored = await fetch(`${base}/api/state`, { headers: { cookie: loginCookie } });
@@ -125,7 +125,7 @@ describe('backend persistence and websocket integration', () => {
     const restarted = await start(database);
     const login = await fetch(`${restarted}/api/login`, {
       method: 'POST', headers: { 'content-type': 'application/json', origin: restarted },
-      body: JSON.stringify({ password: 'long-enough-password' }),
+      body: JSON.stringify({ username: 'owner', password: 'long-enough-password' }),
     });
     const loginCookie = login.headers.get('set-cookie')!.split(';')[0];
     const restored = await fetch(`${restarted}/api/state`, { headers: { cookie: loginCookie } });
@@ -142,7 +142,7 @@ describe('backend persistence and websocket integration', () => {
     expect(write.status).toBe(200);
     await app!.close(); app = undefined;
     base = await start(database);
-    const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ password: 'long-enough-password' }) });
+    const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ username: 'owner', password: 'long-enough-password' }) });
     const restored = await fetch(`${base}/api/state`, { headers: { cookie: login.headers.get('set-cookie')!.split(';')[0] } });
     expect(await restored.json()).toMatchObject({ revision: 1, state: { displayPreferences: preferences } });
   });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { initialState } from '../src/demo-state';
-import { renderDisplay } from '../src/display/view';
+import { renderDisplay, updateElapsedHint } from '../src/display/view';
 import { mountDisplayWidgets, renderWidget } from '../src/display/widgets';
 import { WidgetSchema } from '../src/shared/protocol';
 
@@ -49,7 +49,7 @@ describe('display render boundary', () => {
     const rendered = renderWidget(visual)!;
     const scene = rendered.children[1], circle = scene.children[0];
     expect(scene.attributes).toMatchObject({ role: 'img', 'aria-label': 'Diagram visual' });
-    expect(circle.attributes).toMatchObject({ cx: '100', cy: '0', r: '100', fill: '#78d8e8' });
+    expect(circle.attributes).toMatchObject({ cx: '100', cy: '0', r: '100', fill: 'var(--widget-accent)' });
     expect(rendered.attributes['aria-label']).toBe('Diagram, visual slot');
     const invalid = { ...visual, content: { kind: 'visual', primitives: [{ kind: 'circle', cx: 101, cy: 50, radius: 10, color: 'cyan' }] } } as never;
     expect(renderWidget(invalid)).toBeNull();
@@ -109,6 +109,36 @@ describe('display render boundary', () => {
     });
     expect(renderDisplay({ ...initialState(), progress: null })).not.toContain('display-progress');
     expect(renderDisplay(initialState())).toContain('64% progress');
+  });
+  it('shows elapsed time only for active work with a known start and places slot empty copy in its section', () => {
+    const state = { ...initialState(), turnStartedAt: 1000 };
+    expect(renderDisplay(state, false).toLowerCase()).toContain('elapsed');
+    expect(renderDisplay({ ...state, activity: 'waiting' }, false).toLowerCase()).not.toContain('elapsed');
+    expect(renderDisplay({ ...state, turnStartedAt: null }, false).toLowerCase()).not.toContain('elapsed');
+    expect(renderDisplay(initialState(), false)).toContain('No agent slots yet');
+  });
+  it('updates a non-live elapsed time from its server timestamp and marks active turns only', () => {
+    const hint = { dataset: { turnStartedAt: '1000' }, textContent: '' };
+    const root = { querySelector: () => hint } as unknown as HTMLElement;
+    updateElapsedHint(root, 11_000);
+    expect(hint.textContent).toBe('Active for 10 seconds');
+    for (const activity of ['thinking', 'tool-use', 'responding'] as const) expect(renderDisplay({ ...initialState(), activity, turnStartedAt: 1000 })).toContain('data-turn-started-at="1000"');
+    for (const activity of ['idle', 'waiting', 'completed', 'error'] as const) expect(renderDisplay({ ...initialState(), activity, turnStartedAt: 1000 })).not.toContain('data-turn-started-at=');
+  });
+  it('shows accessible allowlisted tool context only during tool-use', () => {
+    const state = { ...initialState(), activity: 'tool-use' as const };
+    for (const [toolCategory, label] of [['shell', 'Shell tool'], ['code', 'Code tool'], ['search', 'Search tool'], [null, 'Tool activity']] as const) {
+      const html = renderDisplay({ ...state, toolCategory }, false);
+      expect(html).toContain(`aria-label="${label}"`);
+      const ambientEnd = html.indexOf('</div><div class="display-kicker"', html.indexOf('class="display-ambient"'));
+      expect(html.indexOf('class="display-tool-context"')).toBeGreaterThan(ambientEnd);
+    }
+    expect(renderDisplay({ ...state, toolCategory: 'shell' }, false)).toContain('data-tool-category="shell"');
+    expect(renderDisplay(state, false)).toContain('data-tool-context');
+    expect(renderDisplay({ ...state, toolCategory: null }, false)).not.toContain('data-tool-category=');
+    expect(renderDisplay({ ...state, toolCategory: 'shell', activity: 'idle' }, false)).not.toContain('aria-label="Shell tool"');
+    expect(renderDisplay({ ...state, toolCategory: 'shell', activity: 'waiting' }, false)).not.toContain('class="display-tool-context"');
+    expect(renderDisplay(initialState(), false)).toContain('class="display-orb"');
   });
 
   it('supports both display styles and a disconnected status', () => {

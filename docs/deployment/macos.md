@@ -47,4 +47,4 @@ sqlite3 "$HOME/Library/Application Support/Glimpse Dock/glimpse-dock.sqlite" ".b
 
 SQLite's backup command handles WAL state. To recover, stop the agent, preserve the existing database, restore the protected backup at the configured path, then bootstrap the LaunchAgent again. To remove, boot it out, remove the plist and GUI login item, and delete the data/log directories only if no longer needed.
 
-**Verification status:** the LaunchAgent and login-item examples are not machine-verified here. Verify absolute Node/npm paths, plist permissions, GUI-session startup, database writes, loopback-only access, logs, restart, backup/restore, and removal on the target macOS version.
+**Verification status:** the LaunchAgent and login-item examples are not machine-verified here. Verify absolute Node/npm paths, plist permissions, GUI-session startup, database writes, loopback-default access (or explicitly configured CIDR/firewall-limited LAN access), logs, restart, backup/restore, and removal on the target macOS version. See the [LAN security requirements](../security/local-deployment.md) before enabling remote Admin.

@@ -4,10 +4,15 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
 import Database from 'better-sqlite3';
-import { createHash, randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual, X509Certificate } from 'node:crypto';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { createSecureContext } from 'node:tls';
+import { containsAddress, normalizeAddress, parseCidr } from './lan-policy.ts';
 import { canTransitionActivity, CommandRequestSchema, ProtocolStateSchema, type CommandRequest } from '../src/shared/protocol.ts';
 import { createDemoState, transitionDemo } from './adapters/demo.ts';
 import { createWidget, updateWidget, setWidgetVisibility, removeWidget, removeExpiredWidgets, type WidgetPrincipal } from './widgets.ts';
@@ -19,7 +24,9 @@ const scrypt = promisify(scryptCb);
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('base64url');
 const errorBody = (code: string, message: string, requestId = 'request') => ({ v: 1, error: { code, message, requestId } });
-const isLoopback = (host: string) => ['localhost', '127.0.0.1', '[::1]'].includes(host.toLowerCase());
+const isLoopback = (host: string) => ['localhost', '127.0.0.1', '::1', '[::1]'].includes(host.toLowerCase());
+const normalizeUsername = (value: string) => value.trim().toLowerCase();
+const validUsername = (value: unknown): value is string => typeof value === 'string' && /^[a-zA-Z0-9._-]{3,32}$/.test(value.trim());
 const sameLoopbackOrigin = (origin: string | undefined, host: string | undefined) => {
   if (!origin || !host) return false;
   try {
@@ -31,7 +38,59 @@ const sameLoopbackOrigin = (origin: string | undefined, host: string | undefined
 const empty = ProtocolStateSchema.parse({ agent: '', task: '', progress: 0, running: false, widgets: [], logs: [] });
 type VoiceHermesClient = Pick<HermesApiClient, 'createSession' | 'startRun' | 'stopRun' | 'readRunEvents'>;
 type VoiceWyomingClient = Pick<WyomingVoiceClient, 'listWakeModels' | 'listVoices' | 'detectWake' | 'transcribe' | 'synthesize'>;
-type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; demo?: boolean; localAutoAccess?: 'off' | 'display' | 'owner'; now?: () => number; voiceClients?: { hermes?: VoiceHermesClient; wyoming?: VoiceWyomingClient } };
+type ListenerPolicy = ReturnType<typeof validateListenerConfig>;
+const validatedPolicies = new WeakSet<object>();
+const listenerPolicy = <T extends object>(value: T): T => { const result = Object.freeze(value); validatedPolicies.add(result); return result; };
+type Options = { database?: string; bootstrapSecret?: string; host?: string; port?: number; listener?: ListenerPolicy; demo?: boolean; localAutoAccess?: 'off' | 'display' | 'owner'; now?: () => number; voiceClients?: { hermes?: VoiceHermesClient; wyoming?: VoiceWyomingClient } };
+
+function sameOrigin(origin: string | undefined, host: string | undefined, listener: ListenerPolicy): boolean {
+  if (!origin || !host) return false;
+  if (listener.lan) {
+    try { if (isLoopback(new URL(`http://${host}`).hostname) && sameLoopbackOrigin(origin, host)) return true; } catch { return false; }
+    return origin === listener.origin && host === new URL(listener.origin!).host;
+  }
+  return sameLoopbackOrigin(origin, host);
+}
+
+export function validateListenerConfig(env: NodeJS.ProcessEnv = process.env, interfaces = networkInterfaces()) {
+  const host = env.HOST ?? '127.0.0.1', port = Number(env.PORT ?? 4174), mode = env.GLIMPSE_LAN_MODE;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid listener port');
+  if (!mode) {
+    if (!isLoopback(host)) throw new Error('LAN listener requires explicit GLIMPSE_LAN_MODE');
+    return listenerPolicy({ host, port, secure: false as const, lan: false as const, origin: undefined, trustedCidr: undefined });
+  }
+  if (mode !== 'http' && mode !== 'https') throw new Error('Invalid LAN mode');
+  const normalizedHost = normalizeAddress(host);
+  if (!normalizedHost || isLoopback(host) || normalizedHost === '0.0.0.0' || normalizedHost === '::') throw new Error('Invalid LAN bind address');
+  const assigned = Object.values(interfaces).flatMap(items => items ?? []).some(item => normalizeAddress(item.address) === normalizedHost);
+  if (!assigned) throw new Error('LAN bind address is not assigned to this host');
+  const cidr = env.GLIMPSE_TRUSTED_CIDR;
+  if (!cidr) throw new Error('A trusted private CIDR is required');
+  let trustedCidr;
+  try { trustedCidr = parseCidr(cidr); } catch { throw new Error('Invalid trusted private CIDR'); }
+  if (!containsAddress(trustedCidr, host)) throw new Error('Trusted CIDR must contain bind address');
+  const scheme = mode === 'https' ? 'https' : 'http';
+  const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
+  const authority = `${authorityHost}:${port}`;
+  const origin = `${scheme}://${authority}`;
+  if (env.GLIMPSE_LAN_ORIGIN !== origin) throw new Error('Exact LAN origin must match listener scheme, address, and port');
+  if (mode === 'https') {
+    if (!env.GLIMPSE_TLS_CERT || !env.GLIMPSE_TLS_KEY) throw new Error('TLS certificate and key are required');
+    try {
+      const https = { cert: readFileSync(env.GLIMPSE_TLS_CERT), key: readFileSync(env.GLIMPSE_TLS_KEY) };
+      createSecureContext(https);
+      const certificate = new X509Certificate(https.cert);
+      const validAt = Date.now();
+      if (Date.parse(certificate.validFrom) > validAt || Date.parse(certificate.validTo) < validAt
+        || !(isIP(host) ? certificate.checkIP(host) : certificate.checkHost(host, { subject: 'never' }))) {
+        throw new Error('TLS certificate identity or validity check failed');
+      }
+      return listenerPolicy({ host, port, secure: true as const, lan: true as const, origin, trustedCidr, https });
+    } catch { throw new Error('TLS certificate/key are unreadable or do not match'); }
+  }
+  if (env.GLIMPSE_LAN_HTTP_INSECURE !== '1') throw new Error('LAN HTTP requires GLIMPSE_LAN_HTTP_INSECURE=1');
+  return listenerPolicy({ host, port, secure: false as const, lan: true as const, origin, trustedCidr });
+}
 
 export function parseLocalAutoAccess(value: string | undefined): 'off' | 'display' | 'owner' {
   const mode = value ?? 'off';
@@ -52,6 +111,9 @@ function configuredHermesUrl(value: string | undefined): string | undefined {
 }
 
 export async function createServer(options: Options = {}): Promise<FastifyInstance> {
+  const listener = options.listener ?? validateListenerConfig();
+  if (!validatedPolicies.has(listener)) throw new Error('Listener policy must be validated before server creation');
+  if (options.host && options.host !== listener.host || options.port !== undefined && options.port !== listener.port) throw new Error('Server options must match validated listener configuration');
   const db = new Database(options.database ?? 'glimpse-dock.sqlite');
   db.pragma('journal_mode = WAL');
   db.exec(`CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -64,13 +126,14 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
     const recordDiagnostic = (category: 'command' | 'persistence', code: 'COMMAND_ACCEPTED' | 'INVALID_COMMAND' | 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'INVALID_INPUT' | 'PERSISTENCE_FAILED', status: number) => {
      try { db.prepare('INSERT INTO diagnostics(timestamp,category,code,status) VALUES (?,?,?,?)').run(Date.now(), category, code, status); db.prepare('DELETE FROM diagnostics WHERE id NOT IN (SELECT id FROM diagnostics ORDER BY id DESC LIMIT 200)').run(); } catch { /* diagnostics must not disrupt command handling */ }
    };
-   db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)').run();
+    db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)').run();
    db.transaction(() => {
      if (!db.prepare('SELECT 1 FROM pragma_table_info(\'agents\') WHERE name=\'agent_id\'').get()) db.exec('ALTER TABLE agents ADD COLUMN agent_id TEXT');
      for (const row of db.prepare('SELECT digest FROM agents WHERE agent_id IS NULL').all() as any[]) db.prepare('UPDATE agents SET agent_id=? WHERE digest=?').run(randomUUID(), row.digest);
      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agents_agent_id ON agents(agent_id)');
      db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)').run();
-   })();
+    })();
+    db.prepare('INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)').run();
    const now = options.now ?? Date.now;
   const read = (key: string) => db.prepare('SELECT value FROM kv WHERE key=?').get(key) as {value:string}|undefined;
     let state = read('state') ? ProtocolStateSchema.parse(JSON.parse(read('state')!.value)) : options.demo ? createDemoState(now()) : empty;
@@ -79,7 +142,8 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   const sockets = new Map<string, Set<any>>();
   let scryptActive=0; const derive=async(value:string,salt:string)=>{if(scryptActive>=4)throw new Error('busy');scryptActive++;try{return await scrypt(value,salt,64) as Buffer;}finally{scryptActive--;}};
   const closeSockets=(id:string)=>{for(const ws of sockets.get(id)??[])ws.close(1008,'Session revoked');sockets.delete(id);};
-   const app = Fastify({ logger: { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'] }, bodyLimit: 16_384, trustProxy: false });
+    if (listener.lan && read('password') && !read('username')) { db.close(); throw new Error('LAN mode requires local owner username upgrade'); }
+    const app = Fastify({ logger: { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'] }, bodyLimit: 16_384, trustProxy: false, ...(listener.secure ? { https: listener.https } : {}) });
    await app.register(cookie); await app.register(websocket, { options: { maxPayload: 16_384 }, async preClose(this: FastifyInstance) {
      const server = this.websocketServer;
      const clients = [...server.clients];
@@ -96,14 +160,30 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      if (statusCode === 429) return reply.code(429).send(errorBody('RATE_LIMITED', 'Too many attempts. Please wait a minute and try again.'));
      return reply.code(statusCode).send(errorBody('UNAVAILABLE', 'Request unavailable'));
    });
-   if (process.env.NODE_ENV === 'production') await app.register(fastifyStatic, { root: resolve(process.cwd(), 'dist/assets'), prefix: '/assets/', maxAge: '30d', immutable: true });
-   app.addHook('onRequest', async (req, reply) => {
-     if (req.url === '/health') return;
-     if(req.url==='/api/command' && !req.cookies.session) return;
-     if (['POST','PUT','PATCH','DELETE'].includes(req.method)) {
-       if(!sameLoopbackOrigin(req.headers.origin, req.headers.host)) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
-    }
-  });
+    app.addHook('onRequest', async (req, reply) => {
+      if (!listener.lan) {
+        if (req.url === '/health') return;
+        if (req.url === '/api/command' && !req.cookies.session) return;
+        if (['POST','PUT','PATCH','DELETE'].includes(req.method) && !sameOrigin(req.headers.origin, req.headers.host, listener)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+        return;
+      }
+      if (req.headers.host !== new URL(listener.origin!).host) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+      const peer = normalizeAddress(String(req.raw.socket.remoteAddress ?? '')) ?? '';
+      if (isLoopback(peer)) return;
+      if (!containsAddress(listener.trustedCidr!, peer)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+      const route = req.routeOptions.url ?? req.url.split('?')[0];
+      const allowed = (req.method === 'GET' && ['/admin','/api/session','/api/state','/api/admin/diagnostics','/api/sessions','/api/stream'].includes(route))
+        || (req.method === 'GET' && route.startsWith('/assets/'))
+        || (req.method === 'POST' && ['/api/login','/api/command','/api/logout','/api/agents'].includes(route))
+        || (req.method === 'DELETE' && (route === '/api/agents/:digest' || route === '/api/sessions/:id'));
+      if (!allowed) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+      if (['/api/state','/api/admin/diagnostics','/api/sessions','/api/command','/api/logout','/api/agents','/api/agents/:digest','/api/sessions/:id','/api/stream'].includes(route) && auth(req)?.role !== 'owner') return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+      if (['POST','PUT','PATCH','DELETE'].includes(req.method)) {
+        if (!sameOrigin(req.headers.origin, req.headers.host, listener)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+     }
+      if (req.headers.upgrade?.toLowerCase() === 'websocket' && !sameOrigin(req.headers.origin, req.headers.host, listener)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+   });
+    if (process.env.NODE_ENV === 'production') await app.register(fastifyStatic, { root: resolve(process.cwd(), 'dist/assets'), prefix: '/assets/', maxAge: '30d', immutable: true });
     const auth = (req: any) => {
      const raw = req.cookies.session; if (!raw) return undefined;
      const row = db.prepare('SELECT role,csrf,expires FROM sessions WHERE digest=?').get(hash(raw)) as any;
@@ -169,7 +249,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    });
    app.post('/api/voice/settings', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
-     if (!owner || req.body?.csrf !== owner.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+      if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
      const body = req.body;
      if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice'].includes(key))) {
        return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice settings'));
@@ -183,13 +263,13 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    });
    app.post('/api/voice/session', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
-     if (!owner || req.body?.csrf !== owner.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+      if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
      try { return await createHermesSession(false) ? { ready: true } : voiceUnavailable(reply); }
      catch { return voiceUnavailable(reply); }
    });
    app.post('/api/voice/session/reset', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
-     if (!owner || req.body?.csrf !== owner.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+      if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
      if (hasActiveVoiceSession()) return reply.code(409).send(errorBody('CONFLICT', 'Voice session is active'));
      try { return await createHermesSession(true) ? { ready: true } : voiceUnavailable(reply); }
      catch { return voiceUnavailable(reply); }
@@ -204,10 +284,10 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    app.get('/health', async () => ({ ok: true }));
    app.get('/api/admin/diagnostics', async (req: any, reply) => {
      const owner = auth(req);
-     if (owner?.role !== 'owner' || req.headers.origin && !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return reply.code(403).send(errorBody('FORBIDDEN', 'Forbidden'));
+      if (owner?.role !== 'owner' || req.headers.origin && !sameOrigin(req.headers.origin, req.headers.host, listener)) return reply.code(403).send(errorBody('FORBIDDEN', 'Forbidden'));
      try {
        return {
-         readiness: { loopbackBinding: ['localhost','127.0.0.1','::1'].includes(options.host ?? '127.0.0.1'), storage: db.prepare('SELECT 1').get() ? 'available' : 'unavailable', ownerConfigured: Boolean(read('password')), hermes: { configured: Boolean(hermesVoice), availability: 'not-verified' }, wyoming: { configured: Boolean(wyomingVoice), availability: 'not-verified' } },
+          readiness: { loopbackBinding: ['localhost','127.0.0.1','::1'].includes(listener.host), transport: { mode: listener.lan ? (listener.secure ? 'https' : 'http-insecure') : 'loopback', lan: listener.lan, secure: listener.secure }, storage: db.prepare('SELECT 1').get() ? 'available' : 'unavailable', ownerConfigured: Boolean(read('password')), hermes: { configured: Boolean(hermesVoice), availability: 'not-verified' }, wyoming: { configured: Boolean(wyomingVoice), availability: 'not-verified' } },
          agents: (db.prepare('SELECT agent_id,revoked FROM agents ORDER BY agent_id LIMIT 200').all() as any[]).map(agent => ({ id: agent.agent_id, revoked: Boolean(agent.revoked), capabilities: 'unknown', presence: 'unknown' })),
          pairedSessions: (db.prepare("SELECT expires FROM sessions WHERE role='display' ORDER BY expires DESC LIMIT 100").all() as any[]).map(session => ({ status: session.expires > Date.now() ? 'active' : 'expired', expires: session.expires, revoked: false })),
          events: db.prepare('SELECT timestamp,category,code,status FROM diagnostics ORDER BY id DESC LIMIT 50').all(),
@@ -215,19 +295,31 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        };
      } catch { return reply.code(503).send(errorBody('UNAVAILABLE', 'Diagnostics unavailable')); }
    });
-  app.post('/api/setup', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req: any, reply) => {
-    if (!options.bootstrapSecret || read('password')) return reply.code(409).send({ v:1, error: { code:'CONFLICT',message:'Unavailable',requestId:'request' } });
+   app.post('/api/setup', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req: any, reply) => {
+     if (!isLoopback(req.ip) || !options.bootstrapSecret || read('password')) return reply.code(409).send({ v:1, error: { code:'CONFLICT',message:'Unavailable',requestId:'request' } });
     if (req.body?.secret !== options.bootstrapSecret) return reply.code(403).send({ v:1, error: { code:'FORBIDDEN',message:'Forbidden',requestId:'request' } });
-    if(typeof req.body.password!=='string'||Buffer.byteLength(req.body.password)<12||Buffer.byteLength(req.body.password)>128) return reply.code(400).send({v:1,error:{code:'INVALID_INPUT',message:'Invalid input',requestId:'request'}});
+     if(!validUsername(req.body.username)||typeof req.body.password!=='string'||Buffer.byteLength(req.body.password)<12||Buffer.byteLength(req.body.password)>128) return reply.code(400).send({v:1,error:{code:'INVALID_INPUT',message:'Invalid input',requestId:'request'}});
     const salt = randomBytes(16).toString('hex'); let derived:Buffer; try { derived=await derive(String(req.body.password??''),salt); } catch { return reply.code(503).send({v:1,error:{code:'UNAVAILABLE',message:'Unavailable',requestId:'request'}}); }
-    db.prepare('INSERT INTO kv VALUES (?,?)').run('password', `${salt}:${derived.toString('hex')}`);
+     db.prepare('INSERT INTO kv VALUES (?,?)').run('password', `${salt}:${derived.toString('hex')}`);
+     db.prepare('INSERT INTO kv VALUES (?,?)').run('username', normalizeUsername(req.body.username));
     return issue(reply, 'owner');
   });
-  const secureCookie=false; // Loopback-only HTTP; enable only when TLS termination is implemented.
-   const issue = (reply: any, role: string, lifetime = 86400000) => { const raw=token(), csrf=token(); db.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run(hash(raw),role,csrf,Date.now()+lifetime); reply.setCookie('session',raw,{httpOnly:true,sameSite:'strict',path:'/',secure:secureCookie}); return { csrf, role, demoEnabled: options.demo === true }; };
+   const secureCookie=listener.secure;
+    const issue = (reply: any, role: string, lifetime = 86400000) => { const raw=token(), csrf=token(); db.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run(hash(raw),role,csrf,Date.now()+lifetime); reply.setCookie('session',raw,{httpOnly:true,sameSite:'strict',path:'/',secure:secureCookie}); return { csrf, role, demoEnabled: options.demo === true }; };
    app.post('/api/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req: any, reply) => {
-    const saved=read('password')?.value; if (!saved) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
-    if(typeof req.body?.password!=='string'||Buffer.byteLength(req.body.password)<12||Buffer.byteLength(req.body.password)>128) return reply.code(400).send({v:1,error:{code:'INVALID_INPUT',message:'Invalid input',requestId:'request'}});
+     const saved=read('password')?.value; if (!saved) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
+     const existingUsername=read('username')?.value;
+     if (!validUsername(req.body?.username)) return reply.code(400).send(errorBody('INVALID_INPUT','Invalid input'));
+     if(typeof req.body?.password!=='string'||Buffer.byteLength(req.body.password)<12||Buffer.byteLength(req.body.password)>128) return reply.code(400).send(errorBody('INVALID_INPUT','Invalid input'));
+     if (!existingUsername) {
+       if (!isLoopback(req.ip)) return reply.code(403).send(errorBody('IDENTITY_UPGRADE_REQUIRED','Sign in locally to add an owner username'));
+       const [legacySalt,legacyHash]=saved.split(':'); let legacyGot:Buffer; try { legacyGot=await derive(req.body.password,legacySalt); } catch { return reply.code(503).send(errorBody('UNAVAILABLE','Unavailable')); }
+       const legacyExpected=Buffer.from(legacyHash,'hex'); if(legacyGot.length!==legacyExpected.length||!timingSafeEqual(legacyGot,legacyExpected)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+       const upgraded=db.transaction(()=>db.prepare('INSERT OR IGNORE INTO kv VALUES (?,?)').run('username',normalizeUsername(req.body.username)).changes)();
+       if (!upgraded) return reply.code(409).send(errorBody('CONFLICT','Owner identity already upgraded'));
+       return issue(reply,'owner');
+     }
+     if (normalizeUsername(req.body.username)!==existingUsername) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
     const [salt,expected]=saved.split(':'); let got:Buffer; try { got=await derive(req.body.password,salt); } catch { return reply.code(503).send({v:1,error:{code:'UNAVAILABLE',message:'Unavailable',requestId:'request'}}); } const exp=Buffer.from(expected,'hex');
     if(got.length!==exp.length || !timingSafeEqual(got,exp)) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
     return issue(reply,'owner');
@@ -236,11 +328,12 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    app.post('/api/display/redeem', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req: any, reply) => { const code=req.body?.code; if(typeof code!=='string'||code.length>128) return reply.code(400).send({v:1,error:{code:'INVALID_INPUT',message:'Invalid input',requestId:'request'}}); const d=hash(code); const row=db.prepare('SELECT role,expires FROM sessions WHERE digest=?').get(d) as any; if(row?.role!=='pair') return reply.code(403).send(errorBody('PAIRING_INVALID','This pairing code is invalid or has already been used')); if(row.expires<=Date.now()) return reply.code(403).send(errorBody('PAIRING_EXPIRED','This pairing code has expired. Request a new code')); db.prepare('DELETE FROM sessions WHERE digest=?').run(d); return issue(reply,'display'); });
   app.get('/api/sessions',async(req:any,reply)=>{const owner=auth(req); if(owner?.role!=='owner') return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); return {sessions:db.prepare("SELECT digest,role,expires FROM sessions WHERE role IN ('owner','display')").all().map((s:any)=>({id:s.digest,role:s.role,expires:s.expires}))};});
   app.delete('/api/sessions/:id',async(req:any,reply)=>{const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const id=String(req.params.id); db.prepare("DELETE FROM sessions WHERE digest=? AND role IN ('owner','display')").run(id); closeSockets(id); return {ok:true};});
-  app.post('/api/logout',async(req:any,reply)=>{const session=auth(req);if(!session||req.body?.csrf!==session.csrf)return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});db.prepare('DELETE FROM sessions WHERE digest=?').run(session.digest);closeSockets(session.digest);reply.clearCookie('session',{path:'/'});return {ok:true};});
+   app.post('/api/logout',async(req:any,reply)=>{const session=auth(req);if(!session||req.body?.csrf!==session.csrf)return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});db.prepare('DELETE FROM sessions WHERE digest=?').run(session.digest);closeSockets(session.digest);reply.clearCookie('session',{httpOnly:true,sameSite:'strict',path:'/',secure:secureCookie});return {ok:true};});
     app.post('/api/agents', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const secret=token(), id=randomUUID(); db.prepare('INSERT INTO agents(digest,revoked,agent_id) VALUES (?,0,?)').run(hash(secret),id); return { id, secret }; });
   app.delete('/api/agents/:digest', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); db.prepare('UPDATE agents SET revoked=1 WHERE digest=? OR agent_id=?').run(req.params.digest,req.params.digest); return {ok:true}; });
-   const commit = (next: typeof state, detail: string, nextSource: string) => {
-     const rev=revision+1;
+    const commit = (next: typeof state, detail: string, nextSource: string) => {
+      const rev=revision+1;
+      next = ProtocolStateSchema.parse(next);
       try { tx(next,rev,detail,nextSource); } catch { recordDiagnostic('persistence', 'PERSISTENCE_FAILED', 500); return false; }
      state=next; revision=rev; source=nextSource;
      const message=JSON.stringify({v:1,type:'state',revision,source,state});
@@ -271,15 +364,16 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
        next = transitionDemo(state, command, now());
       } else if (isWidgetCommand) { /* handled through widget lifecycle */ }
-      else if (command.type === 'task.update') next = { ...state, task: command.payload.task, activity: 'thinking', progress: null };
+        else if (command.type === 'task.update') next = { ...state, task: command.payload.task, toolCategory: command.payload.toolCategory ?? null, activity: 'thinking', progress: null, turnStartedAt: state.activity === 'thinking' || state.activity === 'tool-use' || state.activity === 'responding' || state.activity === 'waiting' ? state.turnStartedAt : now() };
       else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
        else if (command.type === 'state.set-activity') {
          if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
-         next = { ...state, activity: command.payload.activity };
+          const activity = command.payload.activity;
+          next = { ...state, activity, turnStartedAt: ['thinking', 'tool-use', 'responding', 'waiting'].includes(activity) ? (['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity) ? state.turnStartedAt : now()) : null };
        }
        else if (command.type === 'task.complete') {
          if (!canTransitionActivity(state.activity, 'completed')) return null;
-         next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully' };
+          next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully', turnStartedAt: null };
        }
       else if (command.type === 'metric.set-value') {
         const widget = state.widgets.find(item => item.id === command.payload.id);
@@ -297,8 +391,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (principal !== 'owner') return null;
          next = { ...state, displayPreferences: command.payload.preferences };
        }
-      if (isWidgetCommand) {
-        const rev = revision + 1;
+       if (isWidgetCommand) {
+         const rev = revision + 1;
+         next = ProtocolStateSchema.parse(next);
         try { db.transaction(() => { tx(next,rev,command.type,principalSource(principal)); db.prepare('INSERT INTO widget_commands VALUES (?,?,?,?,?)').run(principal,command.requestId,fingerprint,rev,Date.now()); db.prepare('DELETE FROM widget_commands WHERE rowid NOT IN (SELECT rowid FROM widget_commands ORDER BY created_at DESC LIMIT 1000)').run(); })(); }
          catch { recordDiagnostic('persistence', 'PERSISTENCE_FAILED', 500); return false; }
         state=next; revision=rev; source=principalSource(principal);
@@ -325,7 +420,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      const command = CommandRequestSchema.parse({ v: 1, requestId: token(), type: 'demo.simulate', payload: {} });
      applyCommand(command, 'demo');
    }, 12_000) : undefined;
-   app.get('/api/session', async (req: any) => { const session=auth(req); return session ? {role:session.role,csrf:session.csrf,demoEnabled:options.demo===true,setupRequired:!read('password'),...(session.role==='owner'&&options.localAutoAccess==='owner'?{ownerAutoAccess:true}:{})} : {role:null,demoEnabled:options.demo===true,setupRequired:!read('password')}; });
+    app.get('/api/session', async (req: any) => { const session=auth(req); const transport={mode:listener.lan?(listener.secure?'https':'http-insecure'):'loopback',lan:listener.lan,secure:listener.secure}; return session ? {role:session.role,csrf:session.csrf,demoEnabled:options.demo===true,setupRequired:!read('password'),identityUpgradeRequired:!!read('password')&&!read('username'),transport,...(session.role==='owner'&&options.localAutoAccess==='owner'?{ownerAutoAccess:true}:{})} : {role:null,demoEnabled:options.demo===true,setupRequired:!read('password'),identityUpgradeRequired:!!read('password')&&!read('username'),transport}; });
    app.get('/api/state', async (req: any, reply) => { if(!auth(req)) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}}); return {v:1,type:'snapshot',revision,source,state}; });
     app.post('/api/command', async (req: any, reply) => {
     const session=auth(req); const agentHeader=req.headers.authorization;
@@ -333,7 +428,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
     if(session&&agentHeader) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
     if(!session&&!agent) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}});
     if(session?.role==='display') return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
-     if(session && (req.body?.csrf!==session.csrf || !sameLoopbackOrigin(req.headers.origin, req.headers.host))) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
+      if(session && (req.body?.csrf!==session.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener))) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
     if(agent && agent.revoked) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});
     const commandInput = req.body?.command ?? Object.fromEntries(Object.entries(req.body ?? {}).filter(([key]) => key !== 'csrf'));
      const parsed=CommandRequestSchema.safeParse(commandInput); if(!parsed.success) { if(session || agent) recordDiagnostic('command','INVALID_COMMAND',400); return reply.code(400).send({v:1,error:{code:'INVALID_COMMAND',message:'Invalid command',requestId:req.body?.requestId??'request'}}); }
@@ -348,7 +443,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    });
       const authorizeVoiceUpgrade = async (req: any, reply: any) => {
         const owner = ownerVoiceSession(req);
-        if (!owner || !sameLoopbackOrigin(req.headers.origin, req.headers.host)) return voiceForbidden(reply);
+         if (!owner || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
         let settings: any;
         try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
         const sessionId = read(hermesSessionKey)?.value;
@@ -374,7 +469,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (!voice.hasActiveRun) releaseLease();
        });
      });
-     app.get('/api/stream',{websocket:true},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} if(!sameLoopbackOrigin(req.headers.origin, req.headers.host)){socket.close(1008,'Unauthorized');return;} const id=session.digest; if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(JSON.stringify({v:1,type:'snapshot',revision,source,state}));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
+      app.get('/api/stream',{websocket:true,preValidation:async(req:any,reply:any)=>{const session=auth(req);const remote=!isLoopback(normalizeAddress(String(req.raw.socket.remoteAddress??''))??'');if(!session||session.role==='pair'||remote&&session.role!=='owner'||!sameOrigin(req.headers.origin,req.headers.host,listener))return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));}},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} const id=session.digest; if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(JSON.stringify({v:1,type:'snapshot',revision,source,state}));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
      app.addHook('onClose', async () => { clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
    if (process.env.NODE_ENV === 'production') {
      for (const path of ['/', '/admin', '/display']) app.get(path, async (_req, reply) => reply.sendFile('index.html', resolve(process.cwd(), 'dist'), { maxAge: 0, immutable: false }));
@@ -383,10 +478,9 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const port=Number(process.env.PORT ?? 4174), host=process.env.HOST ?? '127.0.0.1';
-  if(!['localhost','127.0.0.1','::1'].includes(host)) throw new Error('HTTP server must bind to loopback without TLS');
-   const autoAccess=parseLocalAutoAccess(process.env.GLIMPSE_LOCAL_AUTO_ACCESS);
-   warnOwnerAutoAccess(autoAccess);
-  const app=await createServer({database:process.env.GLIMPSE_DB,bootstrapSecret:process.env.GLIMPSE_BOOTSTRAP_SECRET,demo:process.env.GLIMPSE_DEMO==='1',localAutoAccess:autoAccess as 'off'|'display'|'owner'});
-  await app.listen({host,port}); const stop=async()=>{await app.close();process.exit(0);}; process.on('SIGINT',stop);process.on('SIGTERM',stop);
+  const listener=validateListenerConfig();
+    const autoAccess=parseLocalAutoAccess(process.env.GLIMPSE_LOCAL_AUTO_ACCESS);
+    warnOwnerAutoAccess(autoAccess);
+  const app=await createServer({database:process.env.GLIMPSE_DB,bootstrapSecret:process.env.GLIMPSE_BOOTSTRAP_SECRET,demo:process.env.GLIMPSE_DEMO==='1',localAutoAccess:autoAccess as 'off'|'display'|'owner',listener});
+  await app.listen({host:listener.host,port:listener.port}); const stop=async()=>{await app.close();process.exit(0);}; process.on('SIGINT',stop);process.on('SIGTERM',stop);
 }

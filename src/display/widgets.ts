@@ -1,6 +1,6 @@
 import { WidgetSchema, type Widget } from '../shared/protocol';
 
-const colors = { cyan: '#78d8e8', mint: '#7be0b2', blue: '#83aaff', purple: '#ba9cf5', amber: '#f2bd70', muted: '#91a2b8', white: '#edf4ff' } as const;
+const colors = { cyan: 'var(--widget-accent)', mint: 'var(--widget-success)', blue: 'var(--widget-blue)', purple: 'var(--widget-purple)', amber: 'var(--widget-warning)', muted: 'var(--widget-muted)', white: 'var(--widget-white)' } as const;
 const svgNS = 'http://www.w3.org/2000/svg';
 const node = (tag: string, text?: string) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; return el; };
 const svg = (tag: string, attrs: Record<string, number | string>) => { const el = document.createElementNS(svgNS, tag); for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value)); return el; };
