@@ -32,14 +32,22 @@ export function mountVoice(root: ParentNode, csrf = ''): () => void {
   if (!status || !error || !transcript || !subagents || !enable || !manual || !pause || !mute || !stop) return () => {};
    const wakeSelect = root.querySelector<HTMLSelectElement>('[data-wake-name]'), voiceSelect = root.querySelector<HTMLSelectElement>('[data-output-voice]'), timeoutSelect = root.querySelector<HTMLSelectElement>('[data-session-timeout]'), readiness = root.querySelector<HTMLElement>('[data-voice-readiness]');
    let socket: WebSocket | undefined, stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, processor: AudioWorkletNode | undefined, silent: GainNode | undefined, playback: AudioBufferSourceNode | undefined;
-   let generation = 0, disposed = false, ready = false;
-  let paused = false, muted = false, currentTurn: number | null = null, tts: Extract<VoiceEvent, { type: 'tts-start' }> | undefined, ttsBytes: ArrayBuffer | undefined;
+    let generation = 0, disposed = false, ready = false;
+   const hermesOptIn = root.querySelector<HTMLInputElement>('[data-hermes-control]'), hermesStatus = root.querySelector<HTMLElement>('[data-hermes-control-status]');
+   let controlSocket: WebSocket | undefined;
+   let paused = false, ownerPaused = false, muted = false, currentTurn: number | null = null, tts: Extract<VoiceEvent, { type: 'tts-start' }> | undefined, ttsBytes: ArrayBuffer | undefined;
   const roster = new Map<string, 'active' | 'complete'>();
   const announce = (text: string) => { status.textContent = text; };
   const addLine = (who: string, text: string) => { const line = document.createElement('p'); line.textContent = `${who}: ${text}`; transcript.append(line); };
   const send = (value: object) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value)); };
   const stopPlayback = () => { try { playback?.stop(); } catch { /* Playback may have ended between the UI event and stop. */ } playback?.disconnect(); playback = undefined; tts = undefined; ttsBytes = undefined; };
-  const stopCapture = () => { processor?.port.postMessage('end'); processor?.disconnect(); silent?.disconnect(); source?.disconnect(); stream?.getTracks().forEach(track => track.stop()); processor = undefined; silent = undefined; source = undefined; stream = undefined; void context?.close(); context = undefined; };
+   const stopCapture = () => { processor?.port.postMessage('end'); processor?.disconnect(); silent?.disconnect(); source?.disconnect(); stream?.getTracks().forEach(track => track.stop()); processor = undefined; silent = undefined; source = undefined; stream = undefined; void context?.close(); context = undefined; };
+   const controlAck = (requestId: string, status: 'dispatched' | 'denied') => { if (controlSocket?.readyState === WebSocket.OPEN) controlSocket.send(JSON.stringify({ type: 'voice-control-ack', requestId, status })); };
+   if (hermesOptIn && hermesStatus) {
+      const connectControl = () => { controlSocket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/voice/control`); controlSocket.onmessage = event => { let data: unknown; try { data = JSON.parse(event.data); } catch { return; } if (!data || typeof data !== 'object') return; const frame = data as Record<string, unknown>; if (Object.keys(frame).length !== 3 || frame.type !== 'voice-control' || typeof frame.requestId !== 'string' || frame.requestId.length > 64 || !['listening', 'paused'].includes(String(frame.state))) return; if (!hermesOptIn.checked || disposed) return controlAck(frame.requestId, 'denied'); if (frame.state === 'paused') { generation++; ownerPaused = true; paused = true; if (socket) send({ type: 'pause' }); stopCapture(); enable.textContent = 'Enable voice'; announce('Hermes paused listening'); hermesStatus.textContent = 'Hermes paused listening. Click Enable voice to restore microphone permission.'; return controlAck(frame.requestId, 'dispatched'); } if (ownerPaused || !socket || socket.readyState !== WebSocket.OPEN || !stream) { hermesStatus.textContent = 'Click Enable voice to grant microphone permission before Hermes can start listening.'; announce('Click Enable voice to allow Hermes listening'); return controlAck(frame.requestId, 'denied'); } generation++; paused = false; send({ type: 'resume' }); hermesStatus.textContent = 'Hermes requested listening; microphone active.'; controlAck(frame.requestId, 'dispatched'); }; };
+     connectControl();
+      hermesOptIn.addEventListener('change', async () => { try { const response = await fetch('/api/voice/settings', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf, allowHermesControl: hermesOptIn.checked }) }); if (!response.ok) throw new Error(); hermesStatus.textContent = hermesOptIn.checked ? 'Hermes microphone control enabled.' : 'Hermes microphone control is off.'; } catch { hermesOptIn.checked = !hermesOptIn.checked; hermesStatus.textContent = 'Could not save Hermes control setting.'; } });
+   }
     const disable = () => { generation++; send({ type: 'stop' }); stopPlayback(); if (socket && socket.readyState < WebSocket.CLOSING) socket.close(); socket = undefined; stopCapture(); enable.disabled = !ready; enable.textContent = 'Enable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = true; announce('Voice is off'); void fetch('/api/voice/settings', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf, enabled: false, wakeModel: wakeSelect?.value || 'hey_hermes', voice: voiceSelect?.value || 'default', sessionTimeoutMinutes: Number(timeoutSelect?.value) || 30 }) }).catch(() => {}); };
   const failProtocol = () => { error.textContent = 'The voice service sent an invalid update. Re-enable voice to reconnect.'; announce('Voice update invalid'); disable(); };
   const playPcm = async (raw: ArrayBuffer, meta: Extract<VoiceEvent, { type: 'tts-start' }>) => {
@@ -80,7 +88,7 @@ export function mountVoice(root: ParentNode, csrf = ''): () => void {
    void fetch('/api/voice/status', { credentials: 'same-origin' }).then(async response => { if (!response.ok) throw new Error('Voice status unavailable'); return response.json(); }).then(data => {
      if (disposed) return;
      const fill = (select: HTMLSelectElement | null, items: unknown[], fallback: string) => { if (!select) return; const values = items.filter((item): item is string => typeof item === 'string' && item.length > 0); select.replaceChildren(...values.map(value => { const option = document.createElement('option'); option.value = value; option.textContent = value; return option; })); if (values.includes(fallback)) select.value = fallback; else if (values.length) select.value = values[0]; };
-      fill(wakeSelect, data.wakeModels, 'hey_hermes'); fill(voiceSelect, data.voices, 'default');
+      fill(wakeSelect, data.wakeModels, 'hey_hermes'); fill(voiceSelect, data.voices, 'default'); if (hermesOptIn) hermesOptIn.checked = data.allowHermesControl === true;
       const timeout = data.settings?.sessionTimeoutMinutes;
       if (timeoutSelect && typeof timeout === 'number' && [5, 15, 30, 60].includes(timeout)) timeoutSelect.value = String(timeout);
       ready = data.availability?.hermes === true && data.availability?.wyoming === true && Array.isArray(data.wakeModels) && data.wakeModels.length > 0 && Array.isArray(data.voices) && data.voices.length > 0;
@@ -88,15 +96,16 @@ export function mountVoice(root: ParentNode, csrf = ''): () => void {
      enable.disabled = !ready;
    }).catch(() => { if (!disposed) { if (readiness) readiness.textContent = 'Could not load voice availability.'; enable.disabled = true; } });
    enable.addEventListener('click', async () => {
-    if (socket) { disable(); return; }
+      ownerPaused = false;
+     if (socket && stream) { disable(); return; }
      enable.disabled = true; const attempt = ++generation; error.textContent = ''; announce('Preparing voice session');
      try {
         const settings = await fetch('/api/voice/settings', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf, enabled: true, wakeModel: wakeSelect?.value, voice: voiceSelect?.value, sessionTimeoutMinutes: Number(timeoutSelect?.value) || 30 }) });
        if (!settings.ok) throw new Error('Could not save voice settings');
        const session = await fetch('/api/voice/session', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csrf }) });
        if (!session.ok) throw new Error('Could not prepare Hermes session');
-       if (disposed || generation !== attempt) return;
-       announce('Requesting microphone permission'); await capture(); if (disposed || generation !== attempt) { stopCapture(); return; } socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/voice/session`); socket.binaryType = 'arraybuffer';
+        if (disposed || generation !== attempt) return;
+        announce('Requesting microphone permission'); await capture(); if (disposed || generation !== attempt) { stopCapture(); return; } if (socket?.readyState === WebSocket.OPEN) { paused = false; send({ type: 'resume' }); enable.disabled = false; enable.textContent = 'Disable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = false; announce('Listening resumed'); if (hermesStatus) hermesStatus.textContent = 'Microphone active after your permission.'; return; } socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/voice/session`); socket.binaryType = 'arraybuffer';
       socket.onopen = () => { send({ type: 'resume' }); enable.disabled = false; enable.textContent = 'Disable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = false; announce('Starting voice service'); };
       socket.onmessage = event => {
         if (typeof event.data !== 'string') { if (!tts || event.data.byteLength !== tts.bytes || ttsBytes) return failProtocol(); const meta = tts; ttsBytes = event.data; void playPcm(event.data, meta).catch(failProtocol); return; }
@@ -109,7 +118,8 @@ export function mountVoice(root: ParentNode, csrf = ''): () => void {
   manual.addEventListener('click', () => { if (muted) { announce('Unmute the microphone to speak'); return; } paused = false; pause.textContent = 'Pause listening'; send({ type: 'manual-start' }); announce('Listening for your turn'); });
   pause.addEventListener('click', () => { paused = !paused; send({ type: paused ? 'pause' : 'resume' }); pause.textContent = paused ? 'Resume listening' : 'Pause listening'; announce(paused ? 'Listening paused' : 'Listening for Hey Hermes'); });
   mute.addEventListener('click', () => { muted = !muted; mute.textContent = muted ? 'Unmute microphone' : 'Mute microphone'; announce(muted ? 'Microphone muted' : 'Microphone unmuted'); });
-  stop.addEventListener('click', () => { send({ type: 'stop' }); stopPlayback(); announce('Current turn stopped'); });
-   const pagehide = () => disable(); window.addEventListener('pagehide', pagehide);
-   return () => { disposed = true; window.removeEventListener('pagehide', pagehide); disable(); };
+   stop.addEventListener('click', () => { generation++; ownerPaused = true; paused = true; send({ type: 'stop' }); stopPlayback(); stopCapture(); enable.disabled = !ready; enable.textContent = 'Enable voice'; manual.disabled = pause.disabled = mute.disabled = stop.disabled = true; announce('Current turn stopped. Click Enable voice to resume listening.'); });
+    const closeControl = () => { if (controlSocket && controlSocket.readyState < WebSocket.CLOSING) controlSocket.close(); controlSocket = undefined; };
+    const pagehide = () => { disable(); closeControl(); }; window.addEventListener('pagehide', pagehide);
+     return () => { disposed = true; window.removeEventListener('pagehide', pagehide); disable(); closeControl(); };
 }

@@ -13,6 +13,7 @@ Sources:
 - [Plugin authoring guide, Hermes v0.22.6](https://github.com/NousResearch/hermes-agent/blob/v0.22.6/website/docs/developer-guide/plugins/index.md)
 - [Plugin API source, Hermes v0.22.6](https://github.com/NousResearch/hermes-agent/blob/v0.22.6/hermes_cli/plugins.py)
 - [Tool registry source, Hermes v0.22.6](https://github.com/NousResearch/hermes-agent/blob/v0.22.6/tools/registry.py)
+- [API Server agent construction, Hermes v0.22.6](https://github.com/NousResearch/hermes-agent/blob/v0.22.6/gateway/platforms/api_server.py)
 
 | Requested event/state | Status | Verified hook and behavior |
 | --- | --- | --- |
@@ -26,6 +27,7 @@ Sources:
 | Task complete / fail | **Supported when explicit** | `on_session_end` maps only one unambiguous boolean outcome: `completed: true` to `completed`, `failed: true` to `error`. Terminal transitions carry the active turn ID; missing, non-boolean, or contradictory outcome flags produce no final-state command. |
 | Interrupted turn | **Supported when explicit** | `agent_loop_stopped` or `interrupted: true` clears progress and sets `idle` with the active turn ID. An abrupt process exit may leave the last reported state. |
 | Widget create / update / show / hide / remove | **Supported, permission-scoped** | The `glimpse_widget` tool submits only structured widget lifecycle commands. The server derives the agent identity from its bearer credential, validates the protocol, and permits an agent to mutate only its own widgets. |
+| Owner microphone listening / pause | **Supported, owner opt-in required** | `glimpse_voice_control` accepts only the desired state `listening` or `paused`. The owner must separately enable Hermes control in voice settings and grant browser microphone permission. Requests reach only the open authenticated owner display; the acknowledgement confirms dispatch, not microphone activation. |
 
 Only fixed activity labels, generic task text, turn IDs, fixed allowlisted action labels, and validated widget command fields are transmitted. Prompts, assistant responses, history, tool arguments/results, approval text, and raw Hermes hook dictionaries are never sent. Action metadata is accepted only with the matching current turn ID; an untagged action is never attached to a tagged turn. This turn-correlation contract requires the updated plugin and server; older plugins remain compatible only with legacy turns that have no turn ID. Activity callbacks are serialized through normalization and delivery; activity events are not queued or replayed after a connection failure. Widget retries reuse the same request ID and exact body, relying on backend idempotency.
 
@@ -62,6 +64,8 @@ export HERMES_API_SERVER_KEY='<same secret as Hermes API_SERVER_KEY>'
 
 The URL defaults to `http://127.0.0.1:8642`; Glimpse Dock rejects non-loopback Hermes URLs. Put the key in the server's protected environment/secret store and restart the backend after changes. Never place `API_SERVER_KEY` in frontend variables, browser storage, screenshots, or repository files.
 
+Hermes v0.22.6 source shows that API-owned `/v1/runs` can use plugin-registered tools when the plugin is loaded and its toolset is enabled for the `api_server` platform. Glimpse Dock does not automatically enable that toolset. Configure it using the installed Hermes version's documented platform tool configuration, then verify `glimpse_voice_control` appears in API toolsets and can be called in a test run. This source-level path was reviewed, but a live Hermes installation is not available in the Glimpse Dock development environment, so API-session execution remains unverified here.
+
 ### Configure local Wyoming services
 
 Run local Wyoming-compatible wake-word, speech-to-text, and text-to-speech services, each bound to loopback. Install models/voices yourself; Glimpse Dock does not download models or start services. Configure the server with the actual local TCP endpoints:
@@ -74,7 +78,7 @@ export WYOMING_TTS_URI=tcp://127.0.0.1:<tts-port>
 
 Use the installed wake model `hey_hermes` when available (the default selection); the owner can select another discovered model and Piper voice in the voice settings. STT receives bounded PCM16 mono audio at 16 kHz and uses service-side VAD; each utterance is limited to 15 seconds/480,000 bytes. TTS is returned as raw PCM to the owner browser and playback completion gates wake listening to prevent echo-triggered turns.
 
-After restarting Glimpse Dock, sign in as the owner and open `/display`. Review the selected wake model/voice and service readiness, then explicitly select **Enable voice** to grant microphone access and start the local voice socket. Use **Pause**, **Mute**, **Talk**, and **Stop** as needed; **Disable voice** or leaving the page closes capture and stops active local work. A paired display should continue to show only the existing read-only workspace. If settings or session setup is unavailable, check owner authentication and server readiness before retrying.
+After restarting Glimpse Dock, sign in as the owner and open `/display`. Review the selected wake model/voice and service readiness, then explicitly select **Enable voice** to grant microphone access and start the local voice socket. Hermes microphone control is separately opt-in in owner voice settings and is disabled by default. Browser permission remains authoritative; if a Hermes start request cannot open the microphone without a user gesture, use the visible owner **Enable voice** action. Use **Pause**, **Mute**, **Talk**, and **Stop** as needed; **Disable voice** or leaving the page closes capture and stops active local work. A paired display should continue to show only the existing read-only workspace. If settings or session setup is unavailable, check owner authentication and server readiness before retrying.
 
 Automated route/coordinator tests use fake Hermes/Wyoming clients and do not establish compatibility with a live Hermes or Wyoming version. Use the live checklist below on the user's machine before treating voice integration as accepted.
 
@@ -182,6 +186,7 @@ Record the exact `hermes --version`, operating system, CLI or Gateway mode, prov
 6. In a safe test run only, briefly stop Glimpse Dock while Hermes remains active. Confirm Hermes continues, the plugin logs only a generic failure, no stale activity events replay after recovery, and a later new event sends successfully. Check that widget retry does not duplicate a mutation.
 7. Report exact observed hooks/commands, missing events, logs (redacted of all secrets/user content), and any plugin doctor/runtime/schema issues. Do not mark live acceptance complete until these results are recorded.
 8. For voice, record Hermes API Server version and local Wyoming implementations/models/voices. Confirm `/api/voice/status` reports local readiness only to the owner, owner enable creates/reuses a separate session, wake and manual turns transcribe locally, one final Hermes answer is spoken, pause/stop requests stop active runs, and playback acknowledgement resumes wake only after audio ends. Confirm paired display receives no transcript, assistant delta, voice state, or audio; inspect logs and browser storage for absence of API keys and persisted audio/transcripts.
+9. For Hermes microphone control, confirm the owner opt-in starts disabled; without it, the tool fails closed. With it enabled, verify `listening` and `paused` requests reach only the open owner display, browser denial or required user activation is reported with a click-to-enable fallback, and owner Stop/Disable wins over pending requests. The tool's `DISPATCHED` result is not evidence that the microphone is active. Verify `glimpse_voice_control` is enabled for API-owned runs separately from CLI/Gateway and record the exact Hermes version and toolset configuration.
 
 ## Troubleshooting
 
@@ -194,6 +199,7 @@ Record the exact `hermes --version`, operating system, CLI or Gateway mode, prov
 - **No online/offline/idle signal:** this is unsupported by design. A turn interruption can clear to `idle`, but no process heartbeat is implemented.
 - **No `responding` signal:** stream hooks are stream-dependent; non-streaming response-start is unsupported.
 - **Voice unavailable or socket closes:** confirm the Hermes API Server is enabled and listening on loopback, the same `API_SERVER_KEY` is configured as server-side `HERMES_API_SERVER_KEY`, and all three Wyoming URI variables point to local TCP services. Check that Wyoming has at least one installed wake model and Piper voice, enable a discovered model/voice in owner settings, and retry. Do not expose API Server or Wyoming ports beyond loopback.
+- **`glimpse_voice_control` missing from an API-owned run:** confirm the Glimpse Dock plugin is loaded and its toolset is enabled for Hermes `api_server`; plugin registration alone does not enable a platform toolset. Restart the relevant Hermes process and verify the toolset listing before testing a run.
 - **Hermes rejects the tool schema or a hook name:** record the exact Hermes version and diagnostic. The plugin API names were verified against v0.22.6 source, but no live Hermes/plugin-doctor/provider validation has yet been performed. Do not work around this with private APIs or terminal scraping; report the incompatibility for a documented follow-up.
 
 ## Automated tests and limits

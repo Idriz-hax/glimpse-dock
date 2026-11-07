@@ -80,6 +80,11 @@ describe('display render boundary', () => {
     expect(renderDisplay(initialState(), false)).not.toContain('NOT CONNECTED TO HERMES');
   });
 
+  it('shows Hermes microphone opt-in only on the authenticated owner view', () => {
+    expect(renderDisplay(initialState(), false, true, 'owner')).toContain('data-hermes-control');
+    expect(renderDisplay(initialState(), false, true, 'display')).not.toContain('data-hermes-control');
+  });
+
   it('explains active work plainly, shows its observed update, and avoids kiosk keyboard instructions', () => {
     const state = { ...initialState(), activity: 'tool-use' as const, turnStartedAt: 1000, task: 'Using a tool' };
     const html = renderDisplay(state, false);
@@ -105,6 +110,8 @@ describe('display render boundary', () => {
     const html = renderDisplay(initialState(), false, true, 'owner', true);
     expect(html).toContain('Same-device owner access is active');
     expect(html).toContain('Voice is off');
+    expect(html.match(/data-voice-readiness/g)).toHaveLength(1);
+    expect(html).toContain('data-voice-readiness role="status" aria-live="polite"');
     expect(html).toContain('data-voice-enable>Enable voice</button>');
     expect(html).not.toContain('data-voice-enable disabled');
     expect(renderDisplay(initialState(), false, true, 'owner', false)).not.toContain('Same-device owner access is active');

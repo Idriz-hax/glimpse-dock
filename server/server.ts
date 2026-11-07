@@ -269,16 +269,21 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    app.post('/api/voice/settings', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
       if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
-     const body = req.body;
-       if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || (body.allowHermesControl !== undefined && typeof body.allowHermesControl !== 'boolean') || (body.sessionTimeoutMinutes !== undefined && ![5, 15, 30, 60].includes(body.sessionTimeoutMinutes)) || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice', 'sessionTimeoutMinutes', 'allowHermesControl'].includes(key))) {
+      const body = req.body;
+      let previous: any; try { previous = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { previous = undefined; }
+      if (body && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 2 && Object.hasOwn(body, 'csrf') && Object.hasOwn(body, 'allowHermesControl')) {
+        if (typeof body.allowHermesControl !== 'boolean') return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice settings'));
+        db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ ...(previous && typeof previous === 'object' ? previous : { enabled: false, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', sessionTimeoutMinutes: 30 }), allowHermesControl: body.allowHermesControl }));
+        return { saved: true };
+      }
+        if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || (body.allowHermesControl !== undefined && typeof body.allowHermesControl !== 'boolean') || (body.sessionTimeoutMinutes !== undefined && ![5, 15, 30, 60].includes(body.sessionTimeoutMinutes)) || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice', 'sessionTimeoutMinutes', 'allowHermesControl'].includes(key))) {
        return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice settings'));
      }
      if (!wyomingVoice) return voiceUnavailable(reply);
      const discovery = await voiceDiscovery();
      if (!discovery.wakeOk || !discovery.voicesOk) return voiceUnavailable(reply);
      if (!discovery.wakeModels.includes(body.wakeModel) || !discovery.voices.includes(body.voice)) return reply.code(400).send(errorBody('INVALID_INPUT', 'Voice model or voice is not installed'));
-       let previous: any; try { previous = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { previous = undefined; }
-       db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice, sessionTimeoutMinutes: body.sessionTimeoutMinutes ?? 30, allowHermesControl: body.allowHermesControl ?? (previous?.allowHermesControl === true) }));
+        db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice, sessionTimeoutMinutes: body.sessionTimeoutMinutes ?? 30, allowHermesControl: body.allowHermesControl ?? (previous?.allowHermesControl === true) }));
      return { saved: true };
    });
    app.post('/api/voice/session', async (req: any, reply) => {

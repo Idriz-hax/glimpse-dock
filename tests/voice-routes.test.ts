@@ -84,6 +84,32 @@ describe('owner voice REST routes', () => {
     expect((await request('paused')).json()).toMatchObject({ accepted: false, status: 'NO_OWNER_DISPLAY' });
   });
 
+  it('updates Hermes-control consent partially without changing voice preferences or requiring Wyoming', async () => {
+    vi.stubEnv('WYOMING_WAKE_URI', ''); vi.stubEnv('WYOMING_STT_URI', ''); vi.stubEnv('WYOMING_TTS_URI', '');
+    const clients = fakes();
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: { hermes: clients.hermes } as any });
+    const session = await owner(app);
+    const save = (payload: object) => app!.inject({ method: 'POST', url: '/api/voice/settings', headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf, ...payload } });
+    const status = () => app!.inject({ url: '/api/voice/status', headers: { cookie: session.cookie } });
+    expect((await status()).json().allowHermesControl).toBe(false);
+    expect((await save({ allowHermesControl: true })).statusCode).toBe(200);
+    expect((await status()).json().allowHermesControl).toBe(true);
+  });
+
+  it('partial consent updates preserve saved fields, reject extras, and retain the legacy full payload', async () => {
+    const clients = fakes();
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients });
+    const session = await owner(app);
+    const save = (payload: object) => app!.inject({ method: 'POST', url: '/api/voice/settings', headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf, ...payload } });
+    expect((await save({ enabled: true, wakeModel: 'computer', voice: 'en_US-amy-medium', sessionTimeoutMinutes: 15 })).statusCode).toBe(200);
+    expect((await save({ allowHermesControl: true })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/voice/status', headers: { cookie: session.cookie } })).json()).toMatchObject({ allowHermesControl: true, sessionTimeoutMinutes: 15 });
+    expect((await save({ allowHermesControl: false })).statusCode).toBe(200);
+    expect((await save({ allowHermesControl: 'yes' })).statusCode).toBe(400);
+    expect((await save({ allowHermesControl: true, enabled: false })).statusCode).toBe(400);
+    expect((await save({ enabled: true, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', sessionTimeoutMinutes: 30 })).statusCode).toBe(200);
+  });
+
   it('requires owner, same-loopback Origin, and CSRF before calling voice clients', async () => {
     const clients = fakes();
     app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients });
