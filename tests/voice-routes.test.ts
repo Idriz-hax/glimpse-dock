@@ -55,7 +55,10 @@ describe('owner voice REST routes', () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients });
     const session = await owner(app);
     const save = (payload: object) => app!.inject({ method: 'POST', url: '/api/voice/settings', headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf, ...payload } });
-    expect((await save({ enabled: true, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium' })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/voice/status', headers: { cookie: session.cookie } })).json().sessionTimeoutMinutes).toBe(30);
+    expect((await save({ enabled: true, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', sessionTimeoutMinutes: 15 })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/voice/status', headers: { cookie: session.cookie } })).json().sessionTimeoutMinutes).toBe(15);
+    expect((await save({ enabled: true, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', sessionTimeoutMinutes: 7 })).statusCode).toBe(400);
     expect((await save({ enabled: true, wakeModel: 'unknown', voice: 'en_US-lessac-medium' })).statusCode).toBe(400);
     expect((await save({ enabled: true, wakeModel: 'hey_hermes', voice: 'unknown' })).statusCode).toBe(400);
     expect((await save({ enabled: 'yes', wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium' })).statusCode).toBe(400);
@@ -109,6 +112,20 @@ describe('owner voice REST routes', () => {
       expect(raw).not.toContain('HERMES_API_SERVER_KEY');
       expect(raw).not.toContain('127.0.0.1:8642');
     }
+  });
+
+  it('rotates an idle Hermes session when the next request arrives at the timeout', async () => {
+    let clock = 1_700_000_000_000;
+    const clients = fakes();
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients, now: () => clock });
+    const session = await owner(app);
+    const post = (url: string, payload: object) => app!.inject({ method: 'POST', url, headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf, ...payload } });
+    expect((await post('/api/voice/settings', { enabled: true, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', sessionTimeoutMinutes: 5 })).statusCode).toBe(200);
+    expect((await post('/api/voice/session', {})).statusCode).toBe(200);
+    expect(clients.hermes.createSession).toHaveBeenCalledTimes(1);
+    clock += 5 * 60_000;
+    expect((await post('/api/voice/session', {})).statusCode).toBe(200);
+    expect(clients.hermes.createSession).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed when server credentials or Wyoming endpoints are missing', async () => {

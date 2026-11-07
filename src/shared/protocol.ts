@@ -7,6 +7,7 @@ const TaskSchema = z.string().min(1).max(2048);
 const ToolCategorySchema = z.enum(['shell', 'code', 'search']);
 const WidgetIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
 const EpochSchema = z.number().int().safe().nonnegative();
+const TurnIdSchema = z.string().min(1).max(64);
 const ColorSchema = z.enum(['cyan', 'mint', 'blue', 'purple', 'amber', 'muted', 'white']);
 const CoordinateSchema = z.number().finite().min(0).max(100);
 const VisualPrimitiveSchema = z.discriminatedUnion('kind', [
@@ -69,9 +70,10 @@ export const CommandRequestSchema = z.discriminatedUnion('type', [
   command('widget.set-visibility', z.object({ id: WidgetIdSchema, visible: z.boolean() }).strict()),
   command('widget.remove', z.object({ id: WidgetIdSchema }).strict()),
   command('state.set-progress', z.object({ progress: ProgressSchema.nullable() }).strict()),
-  command('state.set-activity', z.object({ activity: ActivitySchema }).strict()),
-  command('task.update', z.object({ task: TaskSchema, toolCategory: ToolCategorySchema.optional() }).strict()),
-  command('task.complete', EmptyPayloadSchema),
+  command('state.set-activity', z.object({ activity: ActivitySchema, turnId: TurnIdSchema.optional() }).strict()),
+  command('state.set-latest-action', z.object({ turnId: TurnIdSchema, text: z.string().min(1).max(256) }).strict()),
+  command('task.update', z.object({ task: TaskSchema, toolCategory: ToolCategorySchema.optional(), turnId: TurnIdSchema.optional(), startTurn: z.literal(true).optional() }).strict().refine(payload => !payload.startTurn || payload.turnId !== undefined)),
+  command('task.complete', z.object({ turnId: TurnIdSchema.optional() }).strict()),
   command('metric.set-value', z.object({ id: z.string().min(1).max(64), value: z.number().int().min(0).max(9_999_999) }).strict()),
   command('display.set-style', z.object({ style: DisplayStyleSchema }).strict()),
   command('display.preferences.set', z.object({ preferences: DisplayPreferencesValueSchema }).strict()),
@@ -95,13 +97,17 @@ export const ProtocolStateSchema = z.preprocess(value => {
     if (result.visible) visibleCount++;
     return result;
   });
-  return { ...value, widgets };
+  const previousAction = (value as Record<string, unknown>).latestAction;
+  const legacyAction = typeof previousAction === 'object' && previousAction !== null && Object.keys(previousAction).sort().join(',') === 'text,turnStartedAt';
+  return { ...value, ...(legacyAction ? { latestAction: null } : {}), widgets };
 }, z.object({
   agent: z.string().max(256),
   task: z.string().max(2048),
   toolCategory: ToolCategorySchema.nullable().default(null),
   progress: ProgressSchema.nullable().default(null),
   turnStartedAt: z.number().int().safe().nonnegative().nullable().default(null),
+  turnId: TurnIdSchema.nullable().default(null),
+  latestAction: z.object({ turnId: TurnIdSchema, text: z.string().min(1).max(256) }).strict().nullable().default(null),
   running: z.boolean(),
   activity: ActivitySchema.default('idle'),
   displayStyle: DisplayStyleSchema.default('quiet'),

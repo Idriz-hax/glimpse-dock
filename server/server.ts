@@ -138,8 +138,12 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   const read = (key: string) => db.prepare('SELECT value FROM kv WHERE key=?').get(key) as {value:string}|undefined;
     let state = read('state') ? ProtocolStateSchema.parse(JSON.parse(read('state')!.value)) : options.demo ? createDemoState(now()) : empty;
    let revision = Number(read('revision')?.value ?? 0);
-   let source = read('source')?.value ?? (options.demo ? 'demo' : 'owner');
-  const sockets = new Map<string, Set<any>>();
+    let source = read('source')?.value ?? (options.demo ? 'demo' : 'owner');
+   const sockets = new Map<string, Set<any>>();
+    const stateForVersion = (version: number) => version === 2 ? state : (({ turnId: _turnId, latestAction: _latestAction, ...legacyState }) => legacyState)(state);
+    const socketStateVersions = new WeakMap<object, number>();
+    const messageForVersion = (type: 'snapshot' | 'state', version: number) => JSON.stringify({ v: 1, type, revision, source, state: stateForVersion(version) });
+    const broadcastState = (type: 'state') => { for (const group of sockets.values()) for (const ws of group) if (ws.readyState === 1) ws.send(messageForVersion(type, socketStateVersions.get(ws) ?? 1)); };
   let scryptActive=0; const derive=async(value:string,salt:string)=>{if(scryptActive>=4)throw new Error('busy');scryptActive++;try{return await scrypt(value,salt,64) as Buffer;}finally{scryptActive--;}};
   const closeSockets=(id:string)=>{for(const ws of sockets.get(id)??[])ws.close(1008,'Session revoked');sockets.delete(id);};
     if (listener.lan && read('password') && !read('username')) { db.close(); throw new Error('LAN mode requires local owner username upgrade'); }
@@ -212,7 +216,8 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    let voiceLease = false;
    const hasActiveVoiceSession = () => voiceLease;
    const voicePreferenceKey = 'voice.settings';
-   const hermesSessionKey = 'voice.hermesSession';
+    const hermesSessionKey = 'voice.hermesSession';
+    const hermesSessionActivityKey = 'voice.hermesSessionActivity';
    const ownerVoiceSession = (req: any) => {
      const session = auth(req);
      return session?.role === 'owner' ? session : undefined;
@@ -230,48 +235,59 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        : [];
      return { wakeOk: wake.status === 'fulfilled', voicesOk: voices.status === 'fulfilled', wakeModels, voices: voiceNames };
    };
-    const createHermesSession = async (replace: boolean): Promise<boolean> => withVoiceSessionLock(async () => {
+    const createHermesSession = async ({ replace = false, startingRun = false }: { replace?: boolean; startingRun?: boolean } = {}): Promise<boolean> => withVoiceSessionLock(async () => {
       if (replace && hasActiveVoiceSession()) return false;
       if (!hermesVoice) return false;
-     if (!replace) {
-       const existing = read(hermesSessionKey)?.value;
-       if (existing && existing.length <= 1024) return true;
-     }
-     const id = await hermesVoice.createSession();
-     if (typeof id !== 'string' || !id.trim() || id.length > 1024) return false;
-     db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(hermesSessionKey, id);
-     return true;
-   });
-   app.get('/api/voice/status', async (req: any, reply) => {
-     if (!ownerVoiceSession(req)) return voiceForbidden(reply);
-     const discovery = await voiceDiscovery();
-     return { availability: { hermes: Boolean(hermesVoice), wyoming: discovery.wakeOk && discovery.voicesOk }, wakeModels: discovery.wakeModels, voices: discovery.voices };
+      if (!replace) {
+        const existing = read(hermesSessionKey)?.value;
+        const lastUsed = Number(read(hermesSessionActivityKey)?.value ?? 0);
+        let settings: any;
+        try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
+        const timeoutMinutes = [5, 15, 30, 60].includes(settings?.sessionTimeoutMinutes) ? settings.sessionTimeoutMinutes : 30;
+        const currentTime = now();
+        if (existing && existing.length <= 1024 && lastUsed > 0 && currentTime - lastUsed < timeoutMinutes * 60_000) {
+          db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(hermesSessionActivityKey, String(currentTime));
+          return true;
+        }
+        if (existing && hasActiveVoiceSession() && !startingRun) return false;
+      }
+      const id = await hermesVoice.createSession();
+      if (typeof id !== 'string' || !id.trim() || id.length > 1024) return false;
+      db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(hermesSessionKey, id);
+      db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(hermesSessionActivityKey, String(now()));
+      return true;
+    });
+    app.get('/api/voice/status', async (req: any, reply) => {
+      if (!ownerVoiceSession(req)) return voiceForbidden(reply);
+      const discovery = await voiceDiscovery();
+      let settings: any; try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
+      return { availability: { hermes: Boolean(hermesVoice), wyoming: discovery.wakeOk && discovery.voicesOk }, wakeModels: discovery.wakeModels, voices: discovery.voices, sessionTimeoutMinutes: [5, 15, 30, 60].includes(settings?.sessionTimeoutMinutes) ? settings.sessionTimeoutMinutes : 30 };
    });
    app.post('/api/voice/settings', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
       if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
      const body = req.body;
-     if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice'].includes(key))) {
+      if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || (body.sessionTimeoutMinutes !== undefined && ![5, 15, 30, 60].includes(body.sessionTimeoutMinutes)) || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice', 'sessionTimeoutMinutes'].includes(key))) {
        return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice settings'));
      }
      if (!wyomingVoice) return voiceUnavailable(reply);
      const discovery = await voiceDiscovery();
      if (!discovery.wakeOk || !discovery.voicesOk) return voiceUnavailable(reply);
      if (!discovery.wakeModels.includes(body.wakeModel) || !discovery.voices.includes(body.voice)) return reply.code(400).send(errorBody('INVALID_INPUT', 'Voice model or voice is not installed'));
-     db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice }));
+      db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice, sessionTimeoutMinutes: body.sessionTimeoutMinutes ?? 30 }));
      return { saved: true };
    });
    app.post('/api/voice/session', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
       if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
-     try { return await createHermesSession(false) ? { ready: true } : voiceUnavailable(reply); }
+      try { return await createHermesSession() ? { ready: true } : voiceUnavailable(reply); }
      catch { return voiceUnavailable(reply); }
    });
    app.post('/api/voice/session/reset', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
       if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
      if (hasActiveVoiceSession()) return reply.code(409).send(errorBody('CONFLICT', 'Voice session is active'));
-     try { return await createHermesSession(true) ? { ready: true } : voiceUnavailable(reply); }
+      try { return await createHermesSession({ replace: true }) ? { ready: true } : voiceUnavailable(reply); }
      catch { return voiceUnavailable(reply); }
    });
     const tx = db.transaction((next: typeof state, rev: number, detail: string, nextSource: string) => {
@@ -336,8 +352,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       next = ProtocolStateSchema.parse(next);
       try { tx(next,rev,detail,nextSource); } catch { recordDiagnostic('persistence', 'PERSISTENCE_FAILED', 500); return false; }
      state=next; revision=rev; source=nextSource;
-     const message=JSON.stringify({v:1,type:'state',revision,source,state});
-     for(const group of sockets.values()) for(const ws of group) if(ws.readyState===1) ws.send(message);
+      broadcastState('state');
      return true;
    };
      const principalSource = (principal: WidgetPrincipal): string => principal === 'owner' ? 'owner' : principal === 'demo' ? 'demo' : 'agent';
@@ -364,16 +379,31 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        if (!options.demo || principal !== 'owner' && principal !== 'demo') return null;
        next = transitionDemo(state, command, now());
       } else if (isWidgetCommand) { /* handled through widget lifecycle */ }
-        else if (command.type === 'task.update') next = { ...state, task: command.payload.task, toolCategory: command.payload.toolCategory ?? null, activity: 'thinking', progress: null, turnStartedAt: state.activity === 'thinking' || state.activity === 'tool-use' || state.activity === 'responding' || state.activity === 'waiting' ? state.turnStartedAt : now() };
-      else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
-       else if (command.type === 'state.set-activity') {
-         if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
+        else if (command.type === 'task.update') {
+          const active = ['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity);
+          const { turnId, startTurn } = command.payload;
+          if (startTurn) {
+            if (turnId === state.turnId && active) next = { ...state, task: command.payload.task, toolCategory: command.payload.toolCategory ?? null, activity: 'thinking', progress: null };
+            else next = { ...state, task: command.payload.task, toolCategory: command.payload.toolCategory ?? null, activity: 'thinking', progress: null, turnId: turnId!, turnStartedAt: now(), latestAction: null };
+          } else {
+            if (state.turnId !== null ? turnId !== state.turnId : turnId !== undefined) return null;
+            next = { ...state, task: command.payload.task, toolCategory: command.payload.toolCategory ?? null, activity: 'thinking', progress: null, turnStartedAt: active ? state.turnStartedAt : now() };
+          }
+        }
+      else if (command.type === 'state.set-latest-action') { if (state.turnId === null || command.payload.turnId !== state.turnId || !['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity)) return null; next = { ...state, latestAction: { turnId: state.turnId, text: command.payload.text } }; }
+       else if (command.type === 'state.set-progress') next = { ...state, progress: command.payload.progress };
+        else if (command.type === 'state.set-activity') {
+          if (state.turnId !== null ? command.payload.turnId !== state.turnId : command.payload.turnId !== undefined) return null;
+          if (!canTransitionActivity(state.activity, command.payload.activity)) return null;
           const activity = command.payload.activity;
-          next = { ...state, activity, turnStartedAt: ['thinking', 'tool-use', 'responding', 'waiting'].includes(activity) ? (['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity) ? state.turnStartedAt : now()) : null };
+           const active = ['thinking', 'tool-use', 'responding', 'waiting'].includes(activity);
+           const wasActive = ['thinking', 'tool-use', 'responding', 'waiting'].includes(state.activity);
+           next = { ...state, activity, turnStartedAt: active ? (wasActive ? state.turnStartedAt : now()) : null, turnId: active ? state.turnId : null, latestAction: active && wasActive ? state.latestAction : null };
        }
-       else if (command.type === 'task.complete') {
+        else if (command.type === 'task.complete') {
+          if (state.turnId !== null ? command.payload.turnId !== state.turnId : command.payload.turnId !== undefined) return null;
          if (!canTransitionActivity(state.activity, 'completed')) return null;
-          next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully', turnStartedAt: null };
+           next = { ...state, activity: 'completed', progress: 100, task: 'Task completed successfully', turnStartedAt: null, turnId: null, latestAction: null };
        }
       else if (command.type === 'metric.set-value') {
         const widget = state.widgets.find(item => item.id === command.payload.id);
@@ -397,7 +427,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
         try { db.transaction(() => { tx(next,rev,command.type,principalSource(principal)); db.prepare('INSERT INTO widget_commands VALUES (?,?,?,?,?)').run(principal,command.requestId,fingerprint,rev,Date.now()); db.prepare('DELETE FROM widget_commands WHERE rowid NOT IN (SELECT rowid FROM widget_commands ORDER BY created_at DESC LIMIT 1000)').run(); })(); }
          catch { recordDiagnostic('persistence', 'PERSISTENCE_FAILED', 500); return false; }
         state=next; revision=rev; source=principalSource(principal);
-        const message=JSON.stringify({v:1,type:'state',revision,source,state}); for(const group of sockets.values()) for(const ws of group) if(ws.readyState===1) ws.send(message);
+         broadcastState('state');
         return { revision };
       }
       return commit(next, command.type, principal === 'demo' || isDemoCommand ? 'demo' : principalSource(principal));
@@ -421,7 +451,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      applyCommand(command, 'demo');
    }, 12_000) : undefined;
     app.get('/api/session', async (req: any) => { const session=auth(req); const transport={mode:listener.lan?(listener.secure?'https':'http-insecure'):'loopback',lan:listener.lan,secure:listener.secure}; return session ? {role:session.role,csrf:session.csrf,demoEnabled:options.demo===true,setupRequired:!read('password'),identityUpgradeRequired:!!read('password')&&!read('username'),transport,...(session.role==='owner'&&options.localAutoAccess==='owner'?{ownerAutoAccess:true}:{})} : {role:null,demoEnabled:options.demo===true,setupRequired:!read('password'),identityUpgradeRequired:!!read('password')&&!read('username'),transport}; });
-   app.get('/api/state', async (req: any, reply) => { if(!auth(req)) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}}); return {v:1,type:'snapshot',revision,source,state}; });
+    app.get('/api/state', async (req: any, reply) => { if(!auth(req)) return reply.code(401).send({v:1,error:{code:'UNAUTHENTICATED',message:'Authentication required',requestId:'request'}}); return {v:1,type:'snapshot',revision,source,state:stateForVersion(Number(req.query?.stateVersion) === 2 ? 2 : 1)}; });
     app.post('/api/command', async (req: any, reply) => {
     const session=auth(req); const agentHeader=req.headers.authorization;
     const agent=agentHeader?.startsWith('Bearer ') ? db.prepare('SELECT revoked,agent_id FROM agents WHERE digest=?').get(hash(agentHeader.slice(7))) as any : undefined;
@@ -446,9 +476,12 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (!owner || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
         let settings: any;
         try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
-        const sessionId = read(hermesSessionKey)?.value;
-        if (!settings?.enabled || !sessionId || !hermesVoice || !wyomingVoice) return voiceUnavailable(reply);
-        if (voiceLease) return reply.code(409).send(errorBody('CONFLICT', 'Voice session active'));
+         if (!settings?.enabled || !hermesVoice || !wyomingVoice) return voiceUnavailable(reply);
+         if (voiceLease) return reply.code(409).send(errorBody('CONFLICT', 'Voice session active'));
+         let ready: boolean;
+          try { ready = await createHermesSession(); } catch { ready = false; }
+         const sessionId = ready ? read(hermesSessionKey)?.value : undefined;
+         if (!sessionId) return voiceUnavailable(reply);
         req.voiceUpgrade = { owner, settings, sessionId };
       };
       app.get('/api/voice/session', { websocket: true, preValidation: authorizeVoiceUpgrade }, (socket, req: any) => {
@@ -460,7 +493,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
        sockets.get(id)!.add(socket);
        activeVoiceSocket = socket;
        const releaseLease = () => { if (activeVoiceSocket === socket) { activeVoiceSocket = undefined; voiceLease = false; } };
-        const voice = new VoiceSession({ socket, hermes: hermesVoice!, wyoming: wyomingVoice!, sessionId, settings, onRemoteSettled: () => { if (socket.readyState === 3) releaseLease(); } });
+          const voice = new VoiceSession({ socket, hermes: hermesVoice!, wyoming: wyomingVoice!, sessionId, settings, ensureSession: async () => await createHermesSession({ startingRun: true }) ? read(hermesSessionKey)?.value : undefined, onRemoteSettled: () => { if (socket.readyState === 3) releaseLease(); } });
        const timer = setTimeout(() => socket.close(1008, 'Session expired'), Math.max(0, owner.expires - now()));
        socket.on('message', (data: unknown, isBinary: boolean) => voice.message(data, isBinary));
        socket.on('close', () => {
@@ -469,7 +502,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          if (!voice.hasActiveRun) releaseLease();
        });
      });
-      app.get('/api/stream',{websocket:true,preValidation:async(req:any,reply:any)=>{const session=auth(req);const remote=!isLoopback(normalizeAddress(String(req.raw.socket.remoteAddress??''))??'');if(!session||session.role==='pair'||remote&&session.role!=='owner'||!sameOrigin(req.headers.origin,req.headers.host,listener))return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));}},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} const id=session.digest; if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(JSON.stringify({v:1,type:'snapshot',revision,source,state}));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
+       app.get('/api/stream',{websocket:true,preValidation:async(req:any,reply:any)=>{const session=auth(req);const remote=!isLoopback(normalizeAddress(String(req.raw.socket.remoteAddress??''))??'');if(!session||session.role==='pair'||remote&&session.role!=='owner'||!sameOrigin(req.headers.origin,req.headers.host,listener))return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));}},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} const id=session.digest; const stateVersion = Number(req.query?.stateVersion) === 2 ? 2 : 1; socketStateVersions.set(socket, stateVersion); if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(messageForVersion('snapshot',stateVersion));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
      app.addHook('onClose', async () => { clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
    if (process.env.NODE_ENV === 'production') {
      for (const path of ['/', '/admin', '/display']) app.get(path, async (_req, reply) => reply.sendFile('index.html', resolve(process.cwd(), 'dist'), { maxAge: 0, immutable: false }));

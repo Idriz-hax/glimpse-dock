@@ -43,6 +43,8 @@ Do not put the owner password or persistent bootstrap secret in the unit. For fi
 
 Autostart the browser in the intended desktop user's session, separately from systemd. For example, create a desktop-session autostart entry that launches the installed browser with `http://127.0.0.1:4174/display`. Use a paired Display session or the explicitly configured local `display` access mode. Do not launch the browser as root or put owner credentials in browser arguments. Browser kiosk flags and desktop autostart behavior vary by desktop environment; test at the actual console login.
 
+If the kiosk browser exits, capture the browser name/version, exact desktop-session launch command and flags, session type, exit status, and the browser's stderr or session-manager journal from the same failure. A Chromium `Failed to send GetTerminationStatus message to zygote` line reports a failed zygote socket request, but by itself does not identify the cause or prove Snap confinement is responsible. Do not add `--no-zygote` as a general workaround: the Linux zygote participates in Chromium's renderer sandbox setup. Diagnose the specific build and environment before changing process-launch or sandbox flags.
+
 ## Stop, backup, rollback
 
 ```sh

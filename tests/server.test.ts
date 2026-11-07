@@ -68,7 +68,7 @@ describe('backend', () => {
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const denied = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'demo-disabled', type: 'demo.simulate', payload: {} } });
     expect(denied.statusCode).toBe(403);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.agent).toBe('');
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.agent).toBe('');
     await app.close();
 
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', demo: true });
@@ -84,7 +84,7 @@ describe('backend', () => {
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const result = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'metric', type: 'metric.set-value', payload: { id: 'tasks', value: 45 } } });
     expect(result.statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets.find((widget: {id:string;content:{value:string}}) => widget.id === 'tasks').content.value).toBe('45');
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.widgets.find((widget: {id:string;content:{value:string}}) => widget.id === 'tasks').content.value).toBe('45');
   });
   it('allows owners to change display style and persists the state shape defaults', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
@@ -93,7 +93,7 @@ describe('backend', () => {
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
     const changed = await send('display.set-style', { style: 'ambient' });
     expect(changed.statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.displayStyle).toBe('ambient');
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.displayStyle).toBe('ambient');
   });
   it('rejects display style changes from an agent principal', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
@@ -112,7 +112,7 @@ describe('backend', () => {
     const csrf = setup.json().csrf;
     const write = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf, v: 1, requestId: 'one', type: 'task.update', payload: { task: 'persisted', toolCategory: 'code' } } });
     expect(write.statusCode).toBe(200);
-    const state = await app.inject({ url: '/api/state', headers: { cookie } });
+    const state = await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } });
     expect(state.json().state).toMatchObject({ task: 'persisted', toolCategory: 'code' });
     expect(state.json().revision).toBe(1);
     const paired = await app.inject({ method: 'POST', url: '/api/display/pair', headers: { cookie, origin:'http://localhost:80' }, payload: { csrf } });
@@ -123,48 +123,68 @@ describe('backend', () => {
     expect(denied.statusCode).toBe(403);
     expect((await app.inject({ url: '/api/state', headers: { cookie: displayCookie } })).statusCode).toBe(200);
   });
-  it('rejects invalid activity transitions without revising state and keeps task commands coherent', async () => {
+  it('correlates tagged turn updates and rejects delayed events from previous turns', async () => {
     let clock = 1_700_000_000_000;
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', now: () => clock });
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
-    await send('state.set-activity', { activity: 'thinking' });
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBe(clock);
-    clock++;
-    for (const activity of ['tool-use', 'responding', 'waiting'] as const) {
-      await send('state.set-activity', { activity });
-      expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBe(1_700_000_000_000);
-    }
-    await send('task.complete', {});
-    const before = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
-    expect(before.state).toMatchObject({ activity: 'completed', turnStartedAt: null });
-    expect((await send('state.set-activity', { activity: 'tool-use' })).statusCode).toBe(403);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(before);
-    expect((await send('task.update', { task: 'Next task' })).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state).toMatchObject({ task: 'Next task', activity: 'thinking', progress: null, turnStartedAt: clock });
-    await send('task.update', { task: 'Tool task', toolCategory: 'shell' });
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.toolCategory).toBe('shell');
-    await send('task.update', { task: 'Unknown tool' });
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.toolCategory).toBeNull();
+    expect((await send('state.set-latest-action', { turnId: 'turn-a', text: 'Used a tool' })).statusCode).toBe(403);
+    await send('task.update', { task: 'Legacy task' });
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.turnId).toBeNull();
+    await send('task.update', { task: 'Turn A', turnId: 'turn-a', startTurn: true });
+    const startedA = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state;
+    expect(startedA).toMatchObject({ turnStartedAt: clock, turnId: 'turn-a', latestAction: null });
+    await send('state.set-activity', { activity: 'tool-use', turnId: 'turn-a' });
+    await send('state.set-latest-action', { turnId: 'turn-a', text: 'Used shell tool' });
+    await send('task.update', { task: 'Same turn update', turnId: 'turn-a' });
+    const sameTurn = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state;
+    expect(sameTurn).toMatchObject({ turnStartedAt: clock, turnId: 'turn-a', latestAction: { turnId: 'turn-a', text: 'Used shell tool' } });
+    await send('task.update', { task: 'Duplicate start', turnId: 'turn-a', startTurn: true });
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state).toMatchObject({ turnStartedAt: clock, latestAction: sameTurn.latestAction });
+    await send('task.update', { task: 'Turn B', turnId: 'turn-b', startTurn: true });
+    const startedB = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state;
+    expect(startedB).toMatchObject({ turnStartedAt: clock, turnId: 'turn-b', latestAction: null });
+    expect(startedB.turnId).not.toBe(startedA.turnId);
+    for (const [type, payload] of [
+      ['task.update', { task: 'Late task A', turnId: 'turn-a' }],
+      ['state.set-latest-action', { turnId: 'turn-a', text: 'Late action A' }],
+      ['state.set-activity', { activity: 'error', turnId: 'turn-a' }],
+      ['task.update', { task: 'Missing ID' }],
+    ] as const) expect((await send(type, payload)).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state).toMatchObject({ turnId: 'turn-b', latestAction: null, task: 'Turn B' });
+    await send('state.set-latest-action', { turnId: 'turn-b', text: 'Used search tool' });
+    await send('state.set-activity', { activity: 'completed', turnId: 'turn-b' });
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state).toMatchObject({ activity: 'completed', turnId: null, turnStartedAt: null, latestAction: null });
+  });
+  it('negotiates legacy and current state fields on snapshots', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
+    const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
+    const cookie = String(setup.headers['set-cookie']).split(';')[0];
+    const legacy = (await app.inject({ url: '/api/state?stateVersion=1', headers: { cookie } })).json();
+    const current = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json();
+    expect(legacy.state).not.toHaveProperty('turnId');
+    expect(legacy.state).not.toHaveProperty('latestAction');
+    expect(current.state).toHaveProperty('turnId', null);
+    expect(current.state).toHaveProperty('latestAction', null);
   });
   it('rejects completion from idle or error without revising state but allows repeated completion', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret', now: () => 1_700_000_000_000 });
     const setup = await app.inject({ method: 'POST', url: '/api/setup', headers: { origin: 'http://localhost:80' }, payload: { secret: 'test-secret', username: 'owner', password: 'long-enough-password' } });
     const cookie = String(setup.headers['set-cookie']).split(';')[0];
     const send = (type: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: type, type, payload } });
-    const idle = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    const idle = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json();
     expect((await send('task.complete', {})).statusCode).toBe(403);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(idle);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json()).toEqual(idle);
     await send('state.set-activity', { activity: 'error' });
-    const error = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    const error = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json();
     expect(error.state.turnStartedAt).toBeNull();
     expect((await send('task.complete', {})).statusCode).toBe(403);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(error);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json()).toEqual(error);
     await send('state.set-activity', { activity: 'thinking' });
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBe(1_700_000_000_000);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.turnStartedAt).toBe(1_700_000_000_000);
     await send('task.complete', {});
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.turnStartedAt).toBeNull();
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.turnStartedAt).toBeNull();
     expect((await send('task.complete', {})).statusCode).toBe(200);
   });
   it('issues stable agent IDs and makes widget mutation retries idempotent', async () => {
@@ -177,12 +197,12 @@ describe('backend', () => {
     const send = () => app!.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${created.json().secret}` }, payload: request });
     expect((await send()).statusCode).toBe(200);
     expect((await send()).json()).toMatchObject({ revision: 1 });
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().revision).toBe(1);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().revision).toBe(1);
     const update = (requestId: string, payload: object) => app!.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${created.json().secret}` }, payload: { v: 1, requestId, type: 'widget.update', payload } });
     expect((await update('content-only', { id: 'agent-one', content: { kind: 'text', text: 'updated' } })).statusCode).toBe(200);
     expect((await update('content-only', { id: 'agent-one', content: { kind: 'text', text: 'updated' } })).json().revision).toBe(2);
     expect((await update('title-only', { id: 'agent-one', title: 'Changed' })).statusCode).toBe(200);
-    const changed = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    const changed = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json();
     expect(changed.state.widgets[0]).toMatchObject({ title: 'Changed', content: { kind: 'text', text: 'updated' }, placement: 'primary' });
     expect(changed.source).toBe('agent');
     expect((await update('content-only', { id: 'agent-one', title: 'different' })).statusCode).toBe(409);
@@ -197,7 +217,7 @@ describe('backend', () => {
     const removeSend = () => app!.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${created.json().secret}` }, payload: remove });
     expect((await removeSend()).statusCode).toBe(200);
     expect((await removeSend()).json().revision).toBe(5);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().revision).toBe(5);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().revision).toBe(5);
   });
   it('lets the owner create, update, hide, and remove an agent-owned widget', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
@@ -209,9 +229,9 @@ describe('backend', () => {
     expect((await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'agent-owned-create', type: 'widget.create', payload: { widget } } })).statusCode).toBe(200);
     expect((await send('owner-update', 'widget.update', { id: 'agent-owned', title: 'Owner updated' })).statusCode).toBe(200);
     expect((await send('owner-hide', 'widget.set-visibility', { id: 'agent-owned', visible: false })).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: `agent:${agent.json().id}`, title: 'Owner updated', visible: false });
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: `agent:${agent.json().id}`, title: 'Owner updated', visible: false });
     expect((await send('owner-remove', 'widget.remove', { id: 'agent-owned' })).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets).toEqual([]);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.widgets).toEqual([]);
   });
   it('creates and updates Admin sample widgets as the owner principal', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
@@ -221,7 +241,7 @@ describe('backend', () => {
     const sample = { version: 1, id: 'test-text', title: 'Text sample', content: { kind: 'text', text: 'sample' }, placement: 'secondary', expiresAt: null };
     expect((await send('sample-create', 'widget.create', { widget: sample })).statusCode).toBe(200);
     expect((await send('sample-update', 'widget.update', { id: 'test-text', title: 'Updated sample' })).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: 'owner', title: 'Updated sample' });
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.widgets[0]).toMatchObject({ owner: 'owner', title: 'Updated sample' });
   });
   it('authorizes legacy metric updates through widget ownership', async () => {
     app = await createServer({ database: ':memory:', bootstrapSecret: 'test-secret' });
@@ -230,16 +250,16 @@ describe('backend', () => {
     const agent = await app.inject({ method: 'POST', url: '/api/agents', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf } });
     const ownerCreate = await app.inject({ method: 'POST', url: '/api/command', headers: { cookie, origin: 'http://localhost:80' }, payload: { csrf: setup.json().csrf, v: 1, requestId: 'owner-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tasks', title: 'Tasks', content: { kind: 'metric', label: 'Tasks', value: '0' }, placement: 'primary', expiresAt: null } } } });
     expect(ownerCreate.statusCode).toBe(200);
-    const ownerBefore = (await app.inject({ url: '/api/state', headers: { cookie } })).json();
+    const ownerBefore = (await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json();
     const send = (secret: string, requestId: string, id: string, value: number) => app!.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${secret}` }, payload: { v: 1, requestId, type: 'metric.set-value', payload: { id, value } } });
     const denied = await send(agent.json().secret, 'legacy-cross-owner', 'tasks', 99);
     expect(denied.statusCode).toBe(403);
     expect(denied.json().error.code).toBe('FORBIDDEN');
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json()).toEqual(ownerBefore);
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json()).toEqual(ownerBefore);
     const own = await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'own-metric-create', type: 'widget.create', payload: { widget: { version: 1, id: 'tools', title: 'Metric', content: { kind: 'metric', label: 'Metric', value: '0' }, placement: 'primary', expiresAt: null } } } });
     expect(own.statusCode).toBe(200);
     expect((await send(agent.json().secret, 'legacy-own', 'tools', 7)).statusCode).toBe(200);
-    expect((await app.inject({ url: '/api/state', headers: { cookie } })).json().state.widgets.find((widget: any) => widget.id === 'tools').content.value).toBe('7');
+    expect((await app.inject({ url: '/api/state?stateVersion=2', headers: { cookie } })).json().state.widgets.find((widget: any) => widget.id === 'tools').content.value).toBe('7');
     const text = await app.inject({ method: 'POST', url: '/api/command', headers: { authorization: `Bearer ${agent.json().secret}` }, payload: { v: 1, requestId: 'own-text-create', type: 'widget.create', payload: { widget: { version: 1, id: 'agent-text', title: 'Text', content: { kind: 'text', text: 'hello' }, placement: 'primary', expiresAt: null } } } });
     expect(text.statusCode).toBe(200);
     expect((await send(agent.json().secret, 'legacy-non-metric', 'agent-text', 8)).statusCode).toBe(400);

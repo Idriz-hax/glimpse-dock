@@ -13,7 +13,8 @@ describe('Admin view', () => {
     const state = { ...initialState(), progress: null, logs: [], widgets: [] };
     const html = renderAdmin(state, 'overview');
     expect(html).not.toContain('role="progressbar"'); expect(html).not.toContain('null%');
-    expect(html).toContain('No recent events yet'); expect(html).not.toContain('v0.1.0');
+    expect(html).toContain('No recent events yet'); expect(html).not.toContain('connected agent starts working'); expect(html).not.toContain('v0.1.0');
+    expect(renderAdmin(state, 'overview', { demoMode: false })).toContain('Activity appears here when your connected agent starts working');
     for (const activity of ['thinking', 'tool-use', 'responding'] as const) expect(renderAdmin({ ...state, activity }, 'overview')).toContain('Active');
     expect(renderAdmin({ ...state, activity: 'waiting' }, 'overview')).toContain('Waiting');
     for (const [activity, label] of [['idle', 'Idle'], ['completed', 'Completed'], ['error', 'Error']] as const) expect(renderAdmin({ ...state, activity }, 'overview')).toContain(label);
@@ -22,12 +23,42 @@ describe('Admin view', () => {
   it('describes unavailable controls honestly and labels only allowlisted tool context', () => {
     const state = { ...initialState(), activity: 'tool-use' as const };
     const unknown = renderAdmin(state, 'overview', { demoMode: false });
-    expect(unknown).toContain('Control availability could not be determined');
-    expect(unknown).toContain('Health &amp; diagnostics');
+    expect(unknown).toContain('Agent commands are unavailable here.');
+    expect(unknown).toContain('Glimpse Dock can show activity and manage widgets, but it cannot send commands to Hermes.');
+    expect(unknown).toContain('Send requests in the Hermes interface.');
+    expect(unknown).not.toMatch(/retry|Health &amp; diagnostics|cause is unknown/i);
     expect(renderAdmin({ ...state, toolCategory: 'shell' }, 'overview')).toContain('aria-label="Shell tool"');
     expect(renderAdmin({ ...state, toolCategory: 'code' }, 'overview')).toContain('aria-label="Code tool"');
     expect(renderAdmin({ ...state, toolCategory: 'search' }, 'overview')).toContain('aria-label="Search tool"');
     expect(renderAdmin(state, 'overview')).toContain('aria-label="Tool activity"');
+  });
+  it('uses one truthful workspace health signal and gives useful empty-state next steps', () => {
+    const state = { ...initialState(), logs: [], widgets: [] };
+    const live = renderAdmin(state, 'overview', { demoMode: false });
+    expect(live).toContain('Overview');
+    expect(live).not.toContain('YOUR WORKSPACE');
+    expect(live).toContain('Agent commands are unavailable here');
+    expect(live).toContain('Glimpse Dock can show activity and manage widgets, but it cannot send commands to Hermes.');
+    expect(live).toContain('Send requests in the Hermes interface.');
+    expect(live).not.toMatch(/unknown|Health &amp; diagnostics|retry|reconnect/i);
+    expect(live).toContain('WORKSPACE STATUS');
+    expect(live.match(/class="status-chip"/g)).toHaveLength(1);
+    expect(live).not.toContain('class="online-dot"');
+    expect(live).not.toContain('class="connection-box"');
+    expect(live).not.toContain('class="demo-tag"');
+    expect(live).toContain('Activity appears here when your connected agent starts working');
+    const widgets = renderAdmin(state, 'widgets', { demoMode: false });
+    expect(widgets).toContain('No widget slots yet');
+    expect(widgets).toContain('<a class="widget-empty-action" href="#sample-actions">Add a sample</a>');
+    expect(widgets).toContain('<div class="sample-actions" id="sample-actions">');
+    const demo = renderAdmin(state, 'overview', { demoMode: true });
+    expect(demo).toContain('class="online-dot"');
+    expect(demo).toContain('class="connection-box"');
+    expect(demo).toContain('class="demo-tag"');
+    expect(demo).toContain('class="status-chip"');
+    expect(demo).toContain('id="simulate"');
+    expect(demo).toContain('id="toggle-agent"');
+    expect(demo).toContain('id="command-form"');
   });
   it('opens the Visual Display in the current tab', () => {
     const html = renderAdmin(initialState(), 'overview');
@@ -168,6 +199,7 @@ describe('Admin view', () => {
     const focus = (target: string) => { const element = { id: target, focus: () => { focusTarget = target; activeElement = element; }, getClientRects: () => [1] }; return element; };
     const nav = focus('first-link'), last = focus('last-link');
     vi.stubGlobal('document', { get activeElement() { return activeElement; } });
+    try {
     const menu = { classList: { contains: () => open, toggle: (_: string, value: boolean) => { open = value; }, remove: () => { open = false; } }, querySelector: () => nav, querySelectorAll: () => [nav, last], contains: (active: { id: string }) => ['first-link', 'last-link'].includes(active.id), addEventListener: (name: string, cb: (event: { key: string; shiftKey?: boolean; preventDefault: () => void }) => void) => { listeners[name] = cb; } };
     const toggle = { setAttribute: (_: string, value: string) => { expanded = value; }, focus: () => { focusTarget = 'menu-toggle'; }, addEventListener: (name: string, cb: () => void) => { listeners[`toggle-${name}`] = cb; } };
     const app = { querySelectorAll: () => [], querySelector: (selector: string) => selector === '#sidebar' ? menu : selector === '#menu-toggle' ? toggle : null } as never;
@@ -177,7 +209,9 @@ describe('Admin view', () => {
     listeners.keydown({ key: 'Tab', preventDefault: () => { prevented = true; } }); expect(prevented).toBe(true); expect(focusTarget).toBe('first-link');
     prevented = false; listeners.keydown({ key: 'Tab', shiftKey: true, preventDefault: () => { prevented = true; } }); expect(prevented).toBe(true); expect(focusTarget).toBe('last-link');
     listeners.keydown({ key: 'Escape', preventDefault() {} }); expect(open).toBe(false); expect(expanded).toBe('false'); expect(focusTarget).toBe('menu-toggle');
-    vi.unstubAllGlobals();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
   it('returns focus to the menu toggle when the mobile backdrop is dismissed', () => {
     let backdropClick: (() => void) | undefined, open = true, focusTarget = '';

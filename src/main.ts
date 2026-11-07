@@ -58,7 +58,7 @@ async function savePreferences(preferences: State['displayPreferences']) {
   preferenceStatus = 'Saving preferences…'; updatePreferenceSaveUI(app, preferenceStatus, true);
   try {
     await request('/api/command', { csrf, v: 1, requestId: id(), type: 'display.preferences.set', payload: { preferences } });
-    const snapshot = validSnapshot(await request('/api/state'));
+     const snapshot = validSnapshot(await request('/api/state?stateVersion=2'));
     if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.');
     state = snapshot; preferenceStatus = 'Preferences saved';
     updatePreferenceSaveUI(app, preferenceStatus, false);
@@ -93,10 +93,10 @@ async function request(path: string, body?: unknown, method?: string) {
 }
 function message(error: unknown) { return error instanceof Error ? error.message : 'Network request failed'; }
 function unauthenticated() { stopVoice?.(); stopVoice = undefined; socket?.close(); role = null; state = null; csrf = ''; restoredOwnerConsentPending = false; gateError = 'Your session expired. Please sign in again.'; render(); }
-async function loadState() { const snapshot = validSnapshot(await request('/api/state')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
+async function loadState() { const snapshot = validSnapshot(await request('/api/state?stateVersion=2')); if (!snapshot) throw new Error('Server returned an invalid workspace snapshot.'); state = snapshot; render(); }
 function connect() {
   clearTimeout(reconnectTimer); socket?.close();
-  const currentSocket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream`);
+  const currentSocket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream?stateVersion=2`);
   socket = currentSocket;
   currentSocket.onmessage = event => {
     if (socket !== currentSocket) return;

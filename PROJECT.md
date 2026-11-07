@@ -2,12 +2,13 @@
 
 **Purpose:** a local visual workspace for monitoring AI-agent activity, with a separate Admin dashboard and paired read-only Visual Display.
 
-**Current state:** Milestones 1–4 are implemented in this worktree. A Fastify service owns shared state, persists it in SQLite, authenticates the single owner, pairs read-only display sessions, and accepts scoped bearer agent commands. The Display presents backend-owned activity and safe structured widgets; Admin manages all widget slots, while agents and the opt-in demo own their own widgets. An opt-in Hermes Python plugin is implemented against official v0.22.6 documentation/source, but no Hermes installation is available here and live CLI/Gateway validation is pending on the user's machine. Simulated agent activity is available only with `GLIMPSE_DEMO=1`; otherwise the workspace starts inactive.
+**Current state:** Milestones 1–4 and the owner-only local Hermes voice stage are implemented in this worktree. A Fastify service owns shared state, persists it in SQLite, authenticates the single owner, pairs read-only display sessions, and accepts scoped bearer agent commands. The Display presents backend-owned activity and safe structured widgets; Admin manages all widget slots, while agents and the opt-in demo own their own widgets. The owner can start local voice conversations with Hermes API Server from `/display`; paired displays remain read-only. The opt-in Hermes Python plugin is implemented against official v0.22.6 documentation/source, but no Hermes installation or local Wyoming services are available here, so live CLI/Gateway and voice validation remain pending on the user's machine. Simulated agent activity is available only with `GLIMPSE_DEMO=1`; otherwise the workspace starts inactive.
 
 ## What is present
 
 - **Admin (`/admin`):** Overview, Widgets, Activity, and Settings. Requires owner authentication.
 - **Visual Display (`/`, `/display`):** separate read-only session; pairing codes are one-time and sessions can be revoked.
+- **Owner voice stage (`/display`):** explicit microphone opt-in, local Wyoming wake/STT/TTS, a separate API-owned Hermes session, turn-local playback gating, and owner-only transcripts; paired displays receive no voice events. See [Hermes integration](docs/integrations/hermes.md) for setup and live validation.
 - **Demo adapter:** preserves seeded activity, `Hermes (Demo)`, allowed sample commands, and 12-second simulated updates when explicitly enabled.
 - **Agent visualization:** explicit backend-driven activity states and validated transitions; no percentage is shown when progress is unknown. Reduced-motion is honored.
 - **Display style:** owner-configurable Quiet status or Ambient activity; preference persists across restart and updates paired displays.
@@ -16,6 +17,7 @@
 - **Hermes plugin (live validation pending):** opt-in Python plugin for documented CLI/Gateway hooks and structured widget operations; lifecycle metadata only, with unsupported presence/idle states documented. See [Hermes integration](docs/integrations/hermes.md).
 - **Backend:** loopback-only Fastify API, SQLite state/revision/activity persistence, authenticated HTTP mutations, and read-only snapshot/update WebSockets.
 - **Security:** bootstrap-secret first-run setup, scrypt password hashing, hashed opaque session and agent credentials, SameSite/HttpOnly cookies, CSRF and exact loopback Origin checks, rate/body/frame bounds, session expiry/revocation, and redacted credential headers.
+- **Voice privacy boundary:** server-only Hermes API key, loopback-only Wyoming services, bounded PCM capture, one owner voice socket/run lease, private transcript/audio delivery, no voice persistence or shared-state broadcast.
 - **Frontend transport:** no browser `localStorage` or `BroadcastChannel` shared state; client validates snapshots and updates and reconnects with bounded backoff.
 
 ## Implementation map
@@ -47,7 +49,7 @@ The backend is a single local process. Plain loopback HTTP is not encrypted. Do 
 
 ## Not implemented
 
-- Live Hermes plugin discovery/hook validation; no Hermes agent is connected automatically until the user installs, configures, and enables the plugin.
+- Live Hermes plugin discovery/hook validation and live Hermes API Server/Wyoming voice validation; no Hermes agent or voice service is connected until the user configures the local services and enables the plugin/voice stage.
 - Hermes online/offline and reliable idle/presence detection; stream response indication is conditional on Hermes streaming hooks.
 - TLS, LAN/remote access, multi-user administration, or multi-instance operation.
 - Executable custom widget code and arbitrary display coordinates.

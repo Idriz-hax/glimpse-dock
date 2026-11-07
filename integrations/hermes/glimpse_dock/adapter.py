@@ -2,6 +2,7 @@
 
 import re
 import threading
+import uuid
 
 
 class HermesEventAdapter:
@@ -16,32 +17,40 @@ class HermesEventAdapter:
     def __init__(self):
         self._lock = threading.Lock()
         self._tool_calls = set()
+        self._turn_id = None
 
-    @staticmethod
-    def _activity(name):
-        return [("state.set-activity", {"activity": name})]
+    def _activity(self, name, turn_id=None):
+        turn_id = self._turn_id if turn_id is None else turn_id
+        payload = {"activity": name}
+        if turn_id is not None:
+            payload["turnId"] = turn_id
+        return [("state.set-activity", payload)]
 
-    @staticmethod
-    def _interrupted():
-        return [("state.set-progress", {"progress": None}),
-                ("state.set-activity", {"activity": "idle"})]
+    def _interrupted(self, turn_id):
+        return [("state.set-progress", {"progress": None}), *self._activity("idle", turn_id)]
 
     def handle(self, event_name, **kwargs):
         if event_name == "pre_llm_call":
-            return [("task.update", {"task": "Hermes is processing a turn"})]
+            with self._lock:
+                self._turn_id = uuid.uuid4().hex
+                turn_id = self._turn_id
+                self._tool_calls.clear()
+            return [("task.update", {"task": "Hermes is processing a turn", "turnId": turn_id, "startTurn": True})]
         if event_name == "pre_tool_call":
             call_id = kwargs.get("tool_call_id")
             if not isinstance(call_id, str) or not self._TOOL_ID.fullmatch(call_id):
                 return []
             with self._lock:
-                if call_id not in self._tool_calls and len(self._tool_calls) >= self._MAX_ACTIVE_TOOL_CALLS:
+                turn_id = self._turn_id
+                if turn_id is None or call_id not in self._tool_calls and len(self._tool_calls) >= self._MAX_ACTIVE_TOOL_CALLS:
                     return []
                 self._tool_calls.add(call_id)
             category = self._TOOL_CATEGORIES.get(kwargs.get("tool_name"))
-            task = {"task": "Hermes is using a tool"}
+            task = {"task": "Hermes is using a tool", "turnId": turn_id}
             if category:
                 task["toolCategory"] = category
-            return [("task.update", task), *self._activity("tool-use")]
+            action = {"shell": "Used shell tool", "code": "Used code tool", "search": "Used search tool"}.get(category, "Used a tool")
+            return [("task.update", task), ("state.set-latest-action", {"turnId": turn_id, "text": action}), *self._activity("tool-use", turn_id)]
         if event_name == "post_tool_call":
             call_id = kwargs.get("tool_call_id")
             if not isinstance(call_id, str) or not self._TOOL_ID.fullmatch(call_id):
@@ -63,8 +72,10 @@ class HermesEventAdapter:
             return self._activity("thinking")
         if event_name == "agent_loop_stopped":
             with self._lock:
+                turn_id = self._turn_id
+                self._turn_id = None
                 self._tool_calls.clear()
-            return self._interrupted()
+            return self._interrupted(turn_id) if turn_id else []
         if event_name == "on_session_end":
             flags = ("completed", "failed", "interrupted")
             values = [kwargs.get(key) for key in flags]
@@ -75,8 +86,12 @@ class HermesEventAdapter:
                 return []
             outcome = active[0]
             with self._lock:
+                turn_id = self._turn_id
+                self._turn_id = None
                 self._tool_calls.clear()
+            if turn_id is None:
+                return []
             if outcome == "interrupted":
-                return self._interrupted()
-            return self._activity("completed" if outcome == "completed" else "error")
+                return self._interrupted(turn_id)
+            return self._activity("completed" if outcome == "completed" else "error", turn_id)
         return []

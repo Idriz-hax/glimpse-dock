@@ -8,7 +8,7 @@ const deferred = <T = void,>() => {
 };
 const frame = (n: number) => Buffer.from([n, 0]);
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-function harness(transcript = 'hello', onRemoteSettled?: () => void) {
+function harness(transcript = 'hello', onRemoteSettled?: () => void, ensureSession?: () => Promise<string | undefined>) {
   const sent: Array<string | Buffer> = [];
   const socket = { send: vi.fn((data: string | Buffer) => sent.push(data)), close: vi.fn() };
   let detection!: (name: string) => void;
@@ -41,7 +41,7 @@ function harness(transcript = 'hello', onRemoteSettled?: () => void) {
     transcribe,
     synthesize: vi.fn(async () => ({ pcm: Buffer.from([4, 0]), rate: 16000, width: 2, channels: 1 })),
   };
-  const session = new VoiceSession({ socket, hermes, wyoming, sessionId: 'private-session', settings: { wakeModel: 'hey', voice: 'voice' }, onRemoteSettled });
+  const session = new VoiceSession({ socket, hermes, wyoming, sessionId: 'private-session', settings: { wakeModel: 'hey', voice: 'voice' }, ensureSession, onRemoteSettled });
   const message = (value: string | Buffer, binary = false) => session.message(value, binary);
   const finishCapture = async () => { await vi.advanceTimersByTimeAsync(15_000); await flush(); };
   return { session, socket, sent, hermes, wyoming, consumed, transcribeSignals, remoteSignals, wakeStarted, wakeDone, triggerWake: (name = 'hey') => detection(name), emit: (event: any) => terminal(event), eventsDone, eventsStarted, message, finishCapture, get detectorCount() { return detectorCount; } };
@@ -50,6 +50,20 @@ function harness(transcript = 'hello', onRemoteSettled?: () => void) {
 afterEach(() => vi.useRealTimers());
 
 describe('VoiceSession', () => {
+  it('ensures the current Hermes session before every run on one socket', async () => {
+    vi.useFakeTimers();
+    const ensureSession = vi.fn().mockResolvedValueOnce('session-1').mockResolvedValueOnce('session-2');
+    const h = harness('hello', undefined, ensureSession);
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(1), true); await h.finishCapture();
+    await h.eventsStarted.promise;
+    h.emit({ type: 'run.completed', output: 'done' }); h.eventsDone.resolve(); await flush();
+    h.message(JSON.stringify({ type: 'playback-ended', turn: 1 }));
+    h.message(JSON.stringify({ type: 'manual-start' })); h.message(frame(2), true); await h.finishCapture();
+    await flush();
+    expect(ensureSession).toHaveBeenCalledTimes(2);
+    expect(h.hermes.startRun.mock.calls.map(call => call[0])).toEqual(['session-1', 'session-2']);
+    h.session.close();
+  });
   it('switches to a fresh queue synchronously on detection and sends cleanup-time frames to STT once', async () => {
     vi.useFakeTimers();
     const h = harness();

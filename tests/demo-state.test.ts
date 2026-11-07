@@ -43,6 +43,19 @@ describe('demo state validation', () => {
     const { activity: _activity, displayStyle: _style, ...oldState } = initialState();
     expect(loadState(JSON.stringify(oldState))).toMatchObject({ activity: 'idle', displayStyle: 'quiet' });
   });
+  it('defaults latest action to null in legacy state and saved snapshots', () => {
+    const { latestAction: _latestAction, ...legacy } = initialState();
+    expect(validateState(legacy)?.latestAction).toBeNull();
+    expect(loadState(JSON.stringify(legacy)).latestAction).toBeNull();
+  });
+  it('rejects malformed persisted latest actions', () => {
+    const state = initialState();
+    for (const latestAction of [
+      { turnId: '', text: 'action' }, { turnId: 'turn', text: '' },
+      { turnId: 'turn', text: 'x'.repeat(257) }, { turnId: 'turn', text: 'action', extra: true },
+      'action', [],
+    ]) expect(validateState({ ...state, latestAction })).toBeNull();
+  });
 
   it('rejects more than 40 persisted log entries', () => {
     const state = initialState();

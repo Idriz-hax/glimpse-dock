@@ -80,6 +80,27 @@ describe('display render boundary', () => {
     expect(renderDisplay(initialState(), false)).not.toContain('NOT CONNECTED TO HERMES');
   });
 
+  it('explains active work plainly, shows its observed update, and avoids kiosk keyboard instructions', () => {
+    const state = { ...initialState(), activity: 'tool-use' as const, turnStartedAt: 1000, task: 'Using a tool' };
+    const html = renderDisplay(state, false);
+    expect(html).toContain('A turn is one round of work by Hermes');
+    expect(html).toContain('Current status: Using a tool');
+    expect(html).not.toContain('class="display-update"');
+    expect(html).toContain('Active for');
+    expect(html).not.toContain('F11');
+    expect(renderDisplay({ ...state, task: '' }, false)).toContain('Waiting for Hermes’s next status update');
+    expect(renderDisplay(initialState(), false)).toContain('Widgets appear here when added');
+  });
+  it('renders only escaped latest actions belonging to the active turn', () => {
+    const state = { ...initialState(), activity: 'tool-use' as const, turnStartedAt: 1000, turnId: 'turn-a', latestAction: { turnId: 'turn-a', text: '<img src=x onerror=alert(1)>' } };
+    expect(renderDisplay(state, false)).toContain('Last observed action: &lt;img src=x onerror=alert(1)&gt;');
+    expect(renderDisplay({ ...state, latestAction: null }, false)).toContain('Waiting for Hermes’s next action update');
+    expect(renderDisplay({ ...state, latestAction: { ...state.latestAction, turnId: 'turn-b' } }, false)).toContain('Waiting for Hermes’s next action update');
+    expect(renderDisplay({ ...state, task: 'Still working', latestAction: null }, false)).toContain('Current status: Still working');
+    expect(renderDisplay({ ...state, task: 'Still working', latestAction: null }, false)).toContain('Waiting for Hermes’s next action update');
+    for (const activity of ['idle', 'waiting', 'completed', 'error'] as const) expect(renderDisplay({ ...state, activity }, false)).not.toContain('display-latest-action');
+  });
+
   it('warns on owner auto-access without turning voice on', () => {
     const html = renderDisplay(initialState(), false, true, 'owner', true);
     expect(html).toContain('Same-device owner access is active');
@@ -115,7 +136,7 @@ describe('display render boundary', () => {
     expect(renderDisplay(state, false).toLowerCase()).toContain('elapsed');
     expect(renderDisplay({ ...state, activity: 'waiting' }, false).toLowerCase()).not.toContain('elapsed');
     expect(renderDisplay({ ...state, turnStartedAt: null }, false).toLowerCase()).not.toContain('elapsed');
-    expect(renderDisplay(initialState(), false)).toContain('No agent slots yet');
+    expect(renderDisplay(initialState(), false)).toContain('Widgets appear here when added');
   });
   it('updates a non-live elapsed time from its server timestamp and marks active turns only', () => {
     const hint = { dataset: { turnStartedAt: '1000' }, textContent: '' };
@@ -144,7 +165,7 @@ describe('display render boundary', () => {
   it('supports both display styles and a disconnected status', () => {
     expect(renderDisplay({ ...initialState(), displayStyle: 'quiet' })).toContain('display--quiet');
     expect(renderDisplay({ ...initialState(), displayStyle: 'ambient' })).toContain('display--ambient');
-    expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).toContain('>Keep this task text</p>');
+    expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).toContain('Current status: Keep this task text');
     expect(renderDisplay(initialState(), true, false)).toContain('Connection lost');
   });
 

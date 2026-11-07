@@ -20,6 +20,7 @@ export type VoiceSessionOptions = {
   hermes: Hermes;
   wyoming: Wyoming;
   sessionId: string;
+  ensureSession?: () => Promise<string | undefined>;
   settings: { enabled?: boolean; wakeModel: string; voice: string };
   onRemoteSettled?: () => void;
 };
@@ -179,12 +180,22 @@ export class VoiceSession {
 
   private async runHermes(text: string, turn: number, generation: number): Promise<void> {
     if (this.remoteActive || !this.isCurrent(generation, turn)) return;
+    let sessionId = this.options.sessionId;
+    try {
+      if (this.options.ensureSession) {
+        const ensured = await this.options.ensureSession();
+        if (!ensured) throw new Error('Hermes session unavailable');
+        sessionId = ensured;
+      }
+    }
+    catch { if (this.isCurrent(generation, turn)) this.fail('HERMES_UNAVAILABLE'); return; }
+    if (!this.isCurrent(generation, turn) || this.closed) return;
     this.settledNotified = false;
     this.remoteActive = true; // Fail closed from before startRun until a terminal event is observed.
     this.remoteStopRequested = false;
     const startController = this.turnController ?? new AbortController();
     let runId: string;
-    try { ({ runId } = await this.options.hermes.startRun(this.options.sessionId, text, randomUUID(), startController.signal)); }
+    try { ({ runId } = await this.options.hermes.startRun(sessionId, text, randomUUID(), startController.signal)); }
     catch { if (this.isCurrent(generation, turn)) this.fail('HERMES_UNAVAILABLE'); return; }
     this.remoteRunId = runId;
     if (startController.signal.aborted || this.remoteStopRequested || this.closed) void this.stopRemote();

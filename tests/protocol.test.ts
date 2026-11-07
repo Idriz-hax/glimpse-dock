@@ -18,6 +18,11 @@ describe('protocol v1', () => {
     expect(canTransitionActivity('error', 'idle')).toBe(true);
   });
   it('accepts only known bounded commands', () => {
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'latest', type: 'state.set-latest-action', payload: { turnId: 'turn-a', text: 'Used search tool' } }).success).toBe(true);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'latest-bad', type: 'state.set-latest-action', payload: { text: 'Used search tool' } }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'start', type: 'task.update', payload: { task: 'Start', startTurn: true } }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'start', type: 'task.update', payload: { task: 'Start', startTurn: true, turnId: 'turn-a' } }).success).toBe(true);
+    expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'start', type: 'task.update', payload: { task: 'Start', turnId: '' } }).success).toBe(false);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r1', type: 'metric.set-value', payload: { id: 'tasks', value: 42 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r2', type: 'state.set-progress', payload: { progress: 100 } }).success).toBe(true);
     expect(CommandRequestSchema.safeParse({ v: 1, requestId: 'r3', type: 'task.update', payload: { task: 'Summarize files' } }).success).toBe(true);
@@ -59,6 +64,12 @@ describe('protocol v1', () => {
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...initialState(), progress: Infinity } }).success).toBe(false);
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...initialState(), logs: Array(41).fill(log) } }).success).toBe(false);
     const state = initialState();
+    expect(ProtocolStateSchema.parse(state).turnId).toBeNull();
+    expect(ProtocolStateSchema.safeParse({ ...state, turnId: '' }).success).toBe(false);
+    const { latestAction: _latestAction, ...legacyActionState } = state;
+    expect(ProtocolStateSchema.parse(legacyActionState).latestAction).toBeNull();
+    expect(ProtocolStateSchema.safeParse({ ...state, latestAction: { turnId: 'turn-a', text: '' } }).success).toBe(false);
+    expect(ProtocolStateSchema.safeParse({ ...state, latestAction: { turnId: 'turn-a', text: 'x'.repeat(257) } }).success).toBe(false);
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...state, activity: 'thinking', displayStyle: 'ambient' } }).success).toBe(true);
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...state, activity: 'invented' } }).success).toBe(false);
     expect(StateMessageSchema.safeParse({ v: 1, type: 'state', revision: 1, source: 'owner', state: { ...state, displayStyle: 'neon' } }).success).toBe(false);

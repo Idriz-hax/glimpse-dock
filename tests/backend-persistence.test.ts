@@ -48,9 +48,14 @@ describe('backend persistence and websocket integration', () => {
     const { cookie, csrf } = await setup(base);
     const write = await fetch(`${base}/api/command`, {
       method: 'POST', headers: { cookie, origin: base, 'content-type': 'application/json' },
-      body: JSON.stringify({ csrf, v: 1, requestId: 'persist', type: 'task.update', payload: { task: 'survives restart' } }),
+      body: JSON.stringify({ csrf, v: 1, requestId: 'persist', type: 'task.update', payload: { task: 'survives restart', turnId: 'persisted-turn', startTurn: true } }),
     });
     expect(write.status).toBe(200);
+    const action = await fetch(`${base}/api/command`, {
+      method: 'POST', headers: { cookie, origin: base, 'content-type': 'application/json' },
+      body: JSON.stringify({ csrf, v: 1, requestId: 'persist-action', type: 'state.set-latest-action', payload: { turnId: 'persisted-turn', text: 'Used search tool' } }),
+    });
+    expect(action.status).toBe(200);
     await app!.close();
     app = undefined;
 
@@ -60,9 +65,9 @@ describe('backend persistence and websocket integration', () => {
       body: JSON.stringify({ username: 'owner', password: 'long-enough-password' }),
     });
     const loginCookie = login.headers.get('set-cookie')!.split(';')[0];
-    const restored = await fetch(`${base}/api/state`, { headers: { cookie: loginCookie } });
+    const restored = await fetch(`${base}/api/state?stateVersion=2`, { headers: { cookie: loginCookie } });
     expect(restored.status).toBe(200);
-    expect(await restored.json()).toMatchObject({ revision: 1, state: { task: 'survives restart' } });
+    expect(await restored.json()).toMatchObject({ revision: 2, state: { task: 'survives restart', turnId: 'persisted-turn', latestAction: { turnId: 'persisted-turn', text: 'Used search tool' } } });
   });
 
   it('backfills a legacy agent identity transactionally and keeps it stable on restart', async () => {

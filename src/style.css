@@ -14,3 +14,11 @@
 .owner-auto-access-warning{display:flex;align-items:center;gap:14px;padding:14px 20px;background:var(--admin-access-warning-surface);border-block:1px solid var(--admin-access-warning-border);color:var(--admin-access-warning-text-highlight-amber);font-size:13px}.owner-auto-access-warning strong{font-weight:700;color:var(--admin-access-warning-strong-text)}.owner-auto-access-warning span{color:var(--admin-access-warning-detail-text)}
 @media(max-width:800px){.admin-field-station .sidebar{position:fixed;inset:0 auto 0 0;z-index:30;width:min(300px,86vw);min-height:100dvh;overflow-y:auto;transform:translateX(-105%);visibility:hidden;transition:transform .2s ease,visibility 0s linear .2s;box-shadow:16px 0 48px var(--admin-operations-surface-neutral)}.admin-field-station .sidebar.mobile-open{transform:translateX(0);visibility:visible;transition:transform .2s ease}.admin-field-station .sidebar-close{display:block;align-self:flex-end;margin:0 8px 16px;padding:10px 12px;border:1px solid var(--admin-operations-border-shadow-green);border-radius:7px;color:var(--admin-operations-text-highlight-green);background:var(--admin-operations-surface-shadow-green)}.admin-field-station .sidebar-backdrop{position:fixed;inset:0;z-index:29;border:0;background:var(--admin-operations-surface-deep-green)}.admin-field-station .sidebar.mobile-open~.sidebar-backdrop{display:block}.admin-field-station .main-shell{min-width:0;width:100%}.admin-field-station .menu-btn{display:inline-flex}}
 @media(max-width:800px) and (prefers-reduced-motion:reduce){.admin-field-station .sidebar{transition:none}}
+
+/* Keep supporting admin copy readable on low-density control-room displays. */
+.side-label,.demo-tag,.eyebrow,.section-kicker,.version,footer,.soon,.widget-kind{font-size:12px}
+.connection-box small,.metric-sub,.progress-caption,.log-body span,.log-row time,.hints,.hints button,.integration-row small,.ops-events time{font-size:13px}
+.status-chip,.secondary-btn,.link-btn,.text-action,.widget-row-actions .secondary-btn,.sample-actions .secondary-btn,.widget-remove{font-size:13px}
+.widget-meta{font-size:13px}
+.admin-field-station .current-panel .panel-actions .muted.small{font-size:13px;line-height:1.5;color:#aab3c4}
+.admin-field-station .widget-empty-action{font-size:13px;line-height:1.5;color:#bcb6ff}

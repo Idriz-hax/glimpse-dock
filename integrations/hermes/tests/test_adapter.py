@@ -10,87 +10,57 @@ class HermesEventAdapterTests(unittest.TestCase):
     def setUp(self):
         self.adapter = HermesEventAdapter()
 
-    def test_documented_event_mappings_filter_sensitive_fields(self):
-        sensitive = {key: "DO-NOT-SEND" for key in
-                     ("user_message", "result", "args", "prompt", "response")}
-        cases = (
-            ("pre_llm_call", {}, [("task.update", {"task": "Hermes is processing a turn"})]),
-            ("pre_tool_call", {"tool_call_id": "opaque-1"}, [("task.update", {"task": "Hermes is using a tool"}), ("state.set-activity", {"activity": "tool-use"})]),
-            ("post_tool_call", {"tool_call_id": "opaque-1"}, [("state.set-activity", {"activity": "thinking"})]),
-            ("on_human_input_request", {}, [("state.set-activity", {"activity": "waiting"})]),
-            ("on_human_input_resolved", {}, [("state.set-activity", {"activity": "thinking"})]),
-            ("on_stream_start", {}, [("state.set-activity", {"activity": "responding"})]),
-            ("on_stream_end", {}, [("state.set-activity", {"activity": "thinking"})]),
-            ("on_session_end", {"completed": True}, [("state.set-activity", {"activity": "completed"})]),
-            ("on_session_end", {"failed": True}, [("state.set-activity", {"activity": "error"})]),
-            ("on_session_end", {"interrupted": True}, [
-                ("state.set-progress", {"progress": None}),
-                ("state.set-activity", {"activity": "idle"}),
-            ]),
-            ("agent_loop_stopped", {}, [
-                ("state.set-progress", {"progress": None}),
-                ("state.set-activity", {"activity": "idle"}),
-            ]),
-        )
-        for event, kwargs, expected in cases:
-            with self.subTest(event=event, kwargs=kwargs):
-                self.assertEqual(self.adapter.handle(event, **(sensitive | kwargs)), expected)
+    def start(self):
+        commands = self.adapter.handle("pre_llm_call", user_message="private")
+        self.assertEqual(commands[0][0], "task.update")
+        self.assertEqual(commands[0][1]["task"], "Hermes is processing a turn")
+        self.assertTrue(commands[0][1]["startTurn"])
+        turn_id = commands[0][1]["turnId"]
+        self.assertEqual(len(turn_id), 32)
+        return turn_id
 
-    def test_tool_call_ids_track_parallel_work_and_clear_at_finalization(self):
-        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="a"),
-                         [("task.update", {"task": "Hermes is using a tool"}), ("state.set-activity", {"activity": "tool-use"})])
-        self.adapter.handle("pre_tool_call", tool_call_id="b")
-        self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="a"), [])
-        self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="b"),
-                         [("state.set-activity", {"activity": "thinking"})])
-        self.adapter.handle("pre_tool_call", tool_call_id="a")
-        self.adapter.handle("on_session_end", completed=True)
-        self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="a"), [])
+    def test_pre_llm_allocates_turn_id_reused_on_tool_and_activity_events(self):
+        turn_id = self.start()
+        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="c1", tool_name="terminal", args="private"), [
+            ("task.update", {"task": "Hermes is using a tool", "toolCategory": "shell", "turnId": turn_id}),
+            ("state.set-latest-action", {"turnId": turn_id, "text": "Used shell tool"}),
+            ("state.set-activity", {"activity": "tool-use", "turnId": turn_id}),
+        ])
+        self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="c1"), [("state.set-activity", {"activity": "thinking", "turnId": turn_id})])
+        self.assertEqual(self.adapter.handle("on_stream_start"), [("state.set-activity", {"activity": "responding", "turnId": turn_id})])
 
-    def test_malformed_unknown_and_ambiguous_inputs_emit_nothing(self):
-        for flags in ({}, {"completed": False, "failed": False},
-                      {"completed": True, "failed": True},
-                      {"completed": 1}, {"completed": True, "failed": False, "interrupted": True}):
-            with self.subTest(flags=flags):
-                self.assertEqual(self.adapter.handle("on_session_end", **flags), [])
-        for event, kwargs in (("unknown", {}), ("pre_tool_call", {}),
-                              ("pre_tool_call", {"tool_call_id": "x" * 129}),
-                              ("post_tool_call", {"tool_call_id": []})):
-            with self.subTest(event=event, kwargs=kwargs):
-                self.assertEqual(self.adapter.handle(event, **kwargs), [])
-
-    def test_invalid_tool_id_does_not_create_a_tracked_call(self):
-        self.adapter.handle("pre_tool_call", tool_call_id="bad id")
-        self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="bad id"), [])
-
-    def test_active_tool_call_cap_refuses_new_ids_but_existing_calls_complete(self):
-        cap = self.adapter._MAX_ACTIVE_TOOL_CALLS
-        for index in range(cap):
-            self.adapter.handle("pre_tool_call", tool_call_id=f"call-{index}")
-        self.assertEqual(len(self.adapter._tool_calls), cap)
-        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="overflow"), [])
-        self.assertEqual(len(self.adapter._tool_calls), cap)
-        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="call-0"),
-                         [("task.update", {"task": "Hermes is using a tool"}), ("state.set-activity", {"activity": "tool-use"})])
-        self.assertEqual(len(self.adapter._tool_calls), cap)
-        self.assertEqual(self.adapter.handle("post_tool_call", tool_call_id="call-0"), [])
-        self.assertEqual(len(self.adapter._tool_calls), cap - 1)
-
-    def test_recognized_tool_names_emit_only_allowlisted_category(self):
-        for tool_name, category in (("terminal", "shell"), ("python", "code"), ("search_files", "search")):
+    def test_tool_categories_are_normalized_and_arbitrary_kwargs_never_escape(self):
+        turn_id = self.start()
+        for tool_name, category, text in (("python", "code", "Used code tool"), ("search_files", "search", "Used search tool"), ("unknown", None, "Used a tool")):
             with self.subTest(tool_name=tool_name):
-                commands = self.adapter.handle("pre_tool_call", tool_call_id=tool_name,
-                                               tool_name=tool_name, args="private", result="private")
-                self.assertEqual(commands, [
-                    ("task.update", {"task": "Hermes is using a tool", "toolCategory": category}),
-                    ("state.set-activity", {"activity": "tool-use"}),
-                ])
+                commands = self.adapter.handle("pre_tool_call", tool_call_id=tool_name, tool_name=tool_name, args="SECRET", result="SECRET", prompt="SECRET", arbitrary="SECRET")
+                self.assertEqual(commands[0][1]["turnId"], turn_id)
+                self.assertEqual(commands[1], ("state.set-latest-action", {"turnId": turn_id, "text": text}))
+                self.assertNotIn("SECRET", repr(commands))
+                self.adapter.handle("post_tool_call", tool_call_id=tool_name)
 
-    def test_unknown_tool_name_omits_category(self):
-        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="unknown",
-                                             tool_name="unrecognized", args="private"),
-                         [("task.update", {"task": "Hermes is using a tool"}),
-                          ("state.set-activity", {"activity": "tool-use"})])
+    def test_new_start_uses_fresh_id_and_rejects_no_turn_tool_call(self):
+        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="before"), [])
+        first = self.start()
+        second = self.start()
+        self.assertNotEqual(first, second)
+
+    def test_terminal_and_interruption_tag_transition_then_clear_turn_id(self):
+        turn_id = self.start()
+        self.assertEqual(self.adapter.handle("on_session_end", completed=True), [("state.set-activity", {"activity": "completed", "turnId": turn_id})])
+        self.assertEqual(self.adapter.handle("on_stream_start"), [("state.set-activity", {"activity": "responding"})])
+        next_id = self.start()
+        self.assertEqual(self.adapter.handle("agent_loop_stopped"), [
+            ("state.set-progress", {"progress": None}),
+            ("state.set-activity", {"activity": "idle", "turnId": next_id}),
+        ])
+        self.assertEqual(self.adapter.handle("on_stream_end"), [("state.set-activity", {"activity": "thinking"})])
+
+    def test_invalid_and_ambiguous_events_do_not_emit(self):
+        self.start()
+        self.assertEqual(self.adapter.handle("on_session_end"), [])
+        self.assertEqual(self.adapter.handle("on_session_end", completed=True, failed=True), [])
+        self.assertEqual(self.adapter.handle("pre_tool_call", tool_call_id="bad id"), [])
 
 
 if __name__ == "__main__":

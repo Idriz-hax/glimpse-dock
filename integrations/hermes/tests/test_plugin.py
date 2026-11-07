@@ -41,7 +41,12 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(schema["parameters"]["additionalProperties"] is False)
         client.send_activity.assert_not_called()
         self.assertIsNone(ctx.hooks["pre_llm_call"](prompt="sensitive"))
-        client.send_activity.assert_called_once_with("task.update", {"task": "Hermes is processing a turn"})
+        client.send_activity.assert_called_once()
+        command, payload = client.send_activity.call_args.args
+        self.assertEqual(command, "task.update")
+        self.assertEqual(payload["task"], "Hermes is processing a turn")
+        self.assertTrue(payload["startTurn"])
+        self.assertEqual(len(payload["turnId"]), 32)
         self.assertTrue(json.loads(handler({"action": "remove", "id": "x"}))["ok"])
 
     def test_missing_token_registers_and_callbacks_fail_open(self):
