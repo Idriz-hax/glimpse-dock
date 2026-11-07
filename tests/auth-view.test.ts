@@ -12,7 +12,9 @@ describe('auth gate views', () => {
     expect(html).toContain('data-auth-mode="login"');
   });
   it('renders username for login and the legacy identity upgrade', () => {
-    expect(renderOwnerGate({ mode: 'login' })).toContain('name="username"');
+    const html = renderOwnerGate({ mode: 'login' });
+    expect(html).toContain('name="username"');
+    expect(html).toContain('pattern="[A-Za-z0-9._\\-]{3,32}"');
     expect(renderOwnerGate({ mode: 'upgrade' } as any)).toContain('data-mode="upgrade"');
   });
   it('requires deliberate acknowledgement for LAN HTTP and displays its interception warning', () => {
