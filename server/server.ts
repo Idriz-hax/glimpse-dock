@@ -145,7 +145,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
     const messageForVersion = (type: 'snapshot' | 'state', version: number) => JSON.stringify({ v: 1, type, revision, source, state: stateForVersion(version) });
     const broadcastState = (type: 'state') => { for (const group of sockets.values()) for (const ws of group) if (ws.readyState === 1) ws.send(messageForVersion(type, socketStateVersions.get(ws) ?? 1)); };
   let scryptActive=0; const derive=async(value:string,salt:string)=>{if(scryptActive>=4)throw new Error('busy');scryptActive++;try{return await scrypt(value,salt,64) as Buffer;}finally{scryptActive--;}};
-    const closeSockets=(id:string)=>{for(const ws of sockets.get(id)??[])ws.close(1008,'Session revoked');sockets.delete(id); if (ownerControlSocket && !sockets.get(id)?.has(ownerControlSocket)) { ownerControlSocket = undefined; finishControlRequests('DISCONNECTED'); }};
+    const closeSockets=(id:string)=>{const group=sockets.get(id);for(const ws of group??[])ws.close(1008,'Session revoked'); if (group?.has(ownerControlSocket)) { ownerControlSocket = undefined; finishControlRequests('DISCONNECTED'); } sockets.delete(id);};
     if (listener.lan && read('password') && !read('username')) { db.close(); throw new Error('LAN mode requires local owner username upgrade'); }
     const app = Fastify({ logger: { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'] }, bodyLimit: 16_384, trustProxy: false, ...(listener.secure ? { https: listener.https } : {}) });
    await app.register(cookie); await app.register(websocket, { options: { maxPayload: 16_384 }, async preClose(this: FastifyInstance) {

@@ -293,6 +293,26 @@ describe('owner voice websocket route', () => {
     expect(await revokeClose).toBe(1008);
     expect(clients.wyoming.transcribe).not.toHaveBeenCalled();
   });
+  it('keeps control socket and pending requests when another owner session logs out', async () => {
+    app=await createServer({database:':memory:',bootstrapSecret:'bootstrap',voiceClients:fakes() as any});
+    await app.listen({host:'127.0.0.1',port:0});
+    const address=app.server.address() as import('node:net').AddressInfo, base=`http://127.0.0.1:${address.port}`;
+    const setup=await fetch(`${base}/api/setup`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({secret:'bootstrap',username:'owner',password:'long-enough-password'})});
+    const cookieA=setup.headers.get('set-cookie')!.split(';')[0]!, csrfA=(await setup.json() as any).csrf;
+    const login=await fetch(`${base}/api/login`,{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({username:'owner',password:'long-enough-password'})});
+    const cookieB=login.headers.get('set-cookie')!.split(';')[0]!, csrfB=(await login.json() as any).csrf;
+    const post=(cookie:string,csrf:string,url:string,payload:object)=>fetch(`${base}${url}`,{method:'POST',headers:{cookie,origin:base,'content-type':'application/json'},body:JSON.stringify({csrf,...payload})});
+    const agent=await post(cookieA,csrfA,'/api/agents',{}), secret=(await agent.json() as any).secret;
+    await post(cookieA,csrfA,'/api/voice/settings',{enabled:false,wakeModel:'hey_hermes',voice:'en_US-lessac-medium',allowHermesControl:true});
+    const ws=new WebSocket(`${base.replace('http:','ws:')}/api/voice/control`,{headers:{cookie:cookieA,origin:base}});
+    await new Promise<void>((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+    const request=fetch(`${base}/api/agent/voice-control`,{method:'POST',headers:{authorization:`Bearer ${secret}`,'content-type':'application/json'},body:JSON.stringify({state:'listening'})});
+    const frame=await new Promise<any>(resolve=>ws.once('message',data=>resolve(JSON.parse(data.toString()))));
+    await post(cookieB,csrfB,'/api/logout',{});
+    ws.send(JSON.stringify({type:'voice-control-ack',requestId:frame.requestId,status:'dispatched'}));
+    expect(await (await request).json()).toMatchObject({accepted:true,status:'DISPATCHED',requestId:frame.requestId});
+    ws.close();
+  });
   it('closes an owner socket when the expiry deadline is already due', async () => {
     const clients=fakes();
     app=await createServer({database:':memory:',bootstrapSecret:'bootstrap',voiceClients:clients as any,now:()=>Date.now()+86_400_001});
