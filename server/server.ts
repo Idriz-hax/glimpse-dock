@@ -168,7 +168,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       if (!listener.lan) {
         if (req.url === '/health') return;
         if (req.url === '/api/command' && !req.cookies.session) return;
-        if (['POST','PUT','PATCH','DELETE'].includes(req.method) && !sameOrigin(req.headers.origin, req.headers.host, listener)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
+         if (['POST','PUT','PATCH','DELETE'].includes(req.method) && !(req.url === '/api/agent/voice-control' && req.headers.authorization?.startsWith('Bearer ')) && !sameOrigin(req.headers.origin, req.headers.host, listener)) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
         return;
       }
       if (req.headers.host !== new URL(listener.origin!).host) return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));
@@ -212,7 +212,8 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
      await previous;
      try { return await operation(); } finally { release(); }
    };
-   let activeVoiceSocket: any;
+    let activeVoiceSocket: any;
+    let ownerControlSocket: any;
    let voiceLease = false;
    const hasActiveVoiceSession = () => voiceLease;
    const voicePreferenceKey = 'voice.settings';
@@ -261,20 +262,21 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       if (!ownerVoiceSession(req)) return voiceForbidden(reply);
       const discovery = await voiceDiscovery();
       let settings: any; try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
-      return { availability: { hermes: Boolean(hermesVoice), wyoming: discovery.wakeOk && discovery.voicesOk }, wakeModels: discovery.wakeModels, voices: discovery.voices, sessionTimeoutMinutes: [5, 15, 30, 60].includes(settings?.sessionTimeoutMinutes) ? settings.sessionTimeoutMinutes : 30 };
+      return { availability: { hermes: Boolean(hermesVoice), wyoming: discovery.wakeOk && discovery.voicesOk }, wakeModels: discovery.wakeModels, voices: discovery.voices, sessionTimeoutMinutes: [5, 15, 30, 60].includes(settings?.sessionTimeoutMinutes) ? settings.sessionTimeoutMinutes : 30, allowHermesControl: settings?.allowHermesControl === true };
    });
    app.post('/api/voice/settings', async (req: any, reply) => {
      const owner = ownerVoiceSession(req);
       if (!owner || req.body?.csrf !== owner.csrf || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply);
      const body = req.body;
-      if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || (body.sessionTimeoutMinutes !== undefined && ![5, 15, 30, 60].includes(body.sessionTimeoutMinutes)) || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice', 'sessionTimeoutMinutes'].includes(key))) {
+       if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.enabled !== 'boolean' || typeof body.wakeModel !== 'string' || body.wakeModel.length < 1 || body.wakeModel.length > 256 || typeof body.voice !== 'string' || body.voice.length < 1 || body.voice.length > 256 || (body.allowHermesControl !== undefined && typeof body.allowHermesControl !== 'boolean') || (body.sessionTimeoutMinutes !== undefined && ![5, 15, 30, 60].includes(body.sessionTimeoutMinutes)) || Object.keys(body).some(key => !['csrf', 'enabled', 'wakeModel', 'voice', 'sessionTimeoutMinutes', 'allowHermesControl'].includes(key))) {
        return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice settings'));
      }
      if (!wyomingVoice) return voiceUnavailable(reply);
      const discovery = await voiceDiscovery();
      if (!discovery.wakeOk || !discovery.voicesOk) return voiceUnavailable(reply);
      if (!discovery.wakeModels.includes(body.wakeModel) || !discovery.voices.includes(body.voice)) return reply.code(400).send(errorBody('INVALID_INPUT', 'Voice model or voice is not installed'));
-      db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice, sessionTimeoutMinutes: body.sessionTimeoutMinutes ?? 30 }));
+       let previous: any; try { previous = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { previous = undefined; }
+       db.prepare('INSERT OR REPLACE INTO kv(key,value) VALUES (?,?)').run(voicePreferenceKey, JSON.stringify({ enabled: body.enabled, wakeModel: body.wakeModel, voice: body.voice, sessionTimeoutMinutes: body.sessionTimeoutMinutes ?? 30, allowHermesControl: body.allowHermesControl ?? (previous?.allowHermesControl === true) }));
      return { saved: true };
    });
    app.post('/api/voice/session', async (req: any, reply) => {
@@ -346,6 +348,20 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
   app.delete('/api/sessions/:id',async(req:any,reply)=>{const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const id=String(req.params.id); db.prepare("DELETE FROM sessions WHERE digest=? AND role IN ('owner','display')").run(id); closeSockets(id); return {ok:true};});
    app.post('/api/logout',async(req:any,reply)=>{const session=auth(req);if(!session||req.body?.csrf!==session.csrf)return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}});db.prepare('DELETE FROM sessions WHERE digest=?').run(session.digest);closeSockets(session.digest);reply.clearCookie('session',{httpOnly:true,sameSite:'strict',path:'/',secure:secureCookie});return {ok:true};});
     app.post('/api/agents', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); const secret=token(), id=randomUUID(); db.prepare('INSERT INTO agents(digest,revoked,agent_id) VALUES (?,0,?)').run(hash(secret),id); return { id, secret }; });
+    app.post('/api/agent/voice-control', async (req: any, reply) => {
+      const authHeader = req.headers.authorization;
+      const agent = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? db.prepare('SELECT revoked FROM agents WHERE digest=?').get(hash(authHeader.slice(7))) as any : undefined;
+      if (!agent) return reply.code(401).send(errorBody('UNAUTHENTICATED', 'Authentication required'));
+      if (agent.revoked) return voiceForbidden(reply);
+      if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || !['listening', 'paused'].includes(req.body.state)) return reply.code(400).send(errorBody('INVALID_INPUT', 'Invalid voice control request'));
+      let settings: any; try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
+      if (settings?.allowHermesControl !== true) return voiceForbidden(reply);
+      if (!ownerControlSocket || ownerControlSocket.readyState !== 1) return { accepted: false, status: 'NO_OWNER_DISPLAY' };
+      const requestId = randomUUID();
+      try { ownerControlSocket.send(JSON.stringify({ type: 'voice-control', requestId, state: req.body.state })); }
+      catch { return { accepted: false, status: 'NO_OWNER_DISPLAY' }; }
+      return { accepted: true, delivered: true, requestId, status: 'DELIVERED' };
+    });
   app.delete('/api/agents/:digest', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); db.prepare('UPDATE agents SET revoked=1 WHERE digest=? OR agent_id=?').run(req.params.digest,req.params.digest); return {ok:true}; });
     const commit = (next: typeof state, detail: string, nextSource: string) => {
       const rev=revision+1;
@@ -500,8 +516,15 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
          clearTimeout(timer); voice.close();
          const group = sockets.get(id); group?.delete(socket); if (!group?.size) sockets.delete(id);
          if (!voice.hasActiveRun) releaseLease();
-       });
-     });
+      });
+      });
+      app.get('/api/voice/control', { websocket: true, preValidation: async (req: any, reply: any) => { const owner = ownerVoiceSession(req); if (!owner || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply); req.controlOwner = owner; } }, (socket, req: any) => {
+        if (ownerControlSocket?.readyState === 1) { socket.close(1008, 'Owner control page already connected'); return; }
+        const owner = req.controlOwner; ownerControlSocket = socket;
+        const timer = setTimeout(() => socket.close(1008, 'Session expired'), Math.max(0, owner.expires - now()));
+        socket.on('message', () => socket.close(1008, 'Read only'));
+        socket.on('close', () => { clearTimeout(timer); if (ownerControlSocket === socket) ownerControlSocket = undefined; });
+      });
        app.get('/api/stream',{websocket:true,preValidation:async(req:any,reply:any)=>{const session=auth(req);const remote=!isLoopback(normalizeAddress(String(req.raw.socket.remoteAddress??''))??'');if(!session||session.role==='pair'||remote&&session.role!=='owner'||!sameOrigin(req.headers.origin,req.headers.host,listener))return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));}},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} const id=session.digest; const stateVersion = Number(req.query?.stateVersion) === 2 ? 2 : 1; socketStateVersions.set(socket, stateVersion); if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(messageForVersion('snapshot',stateVersion));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
      app.addHook('onClose', async () => { clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
    if (process.env.NODE_ENV === 'production') {

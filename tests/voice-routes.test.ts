@@ -66,6 +66,24 @@ describe('owner voice REST routes', () => {
     expect(clients.wyoming.listVoices).toHaveBeenCalled();
   });
 
+  it('defaults Hermes control off, persists explicit opt-in, and routes only to an active owner control socket', async () => {
+    const clients = fakes();
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients });
+    const session = await owner(app);
+    const status = () => app!.inject({ url: '/api/voice/status', headers: { cookie: session.cookie } });
+    expect((await status()).json().allowHermesControl).toBe(false);
+    const created = await app.inject({ method: 'POST', url: '/api/agents', headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf } });
+    const secret = created.json().secret;
+    const request = (state: string, authorization = `Bearer ${secret}`) => app!.inject({ method: 'POST', url: '/api/agent/voice-control', headers: { authorization }, payload: { state } });
+    expect((await request('listening')).statusCode).toBe(403);
+    expect((await request('paused', 'Bearer invalid')).statusCode).toBe(401);
+    const save = (payload: object) => app!.inject({ method: 'POST', url: '/api/voice/settings', headers: { ...ORIGIN, cookie: session.cookie }, payload: { csrf: session.csrf, ...payload } });
+    expect((await save({ enabled: true, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', allowHermesControl: true })).statusCode).toBe(200);
+    expect((await status()).json().allowHermesControl).toBe(true);
+    expect((await request('invalid')).statusCode).toBe(400);
+    expect((await request('paused')).json()).toMatchObject({ accepted: false, status: 'NO_OWNER_DISPLAY' });
+  });
+
   it('requires owner, same-loopback Origin, and CSRF before calling voice clients', async () => {
     const clients = fakes();
     app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients });
