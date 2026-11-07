@@ -163,6 +163,33 @@ describe('owner voice REST routes', () => {
 describe('owner voice websocket route', () => {
   let app: Awaited<ReturnType<typeof createServer>> | undefined;
   afterEach(async () => { await app?.close(); app = undefined; });
+  it('waits for correlated owner dispatch acknowledgement, ignores stale IDs, times out, and fails revoked agents', async () => {
+    app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: fakes() });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as import('node:net').AddressInfo, base = `http://127.0.0.1:${address.port}`;
+    const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'bootstrap', username: 'owner', password: 'long-enough-password' }) });
+    const cookie = setup.headers.get('set-cookie')!.split(';')[0]!, csrf = (await setup.json() as any).csrf;
+    const post = (url: string, payload: object, headers: Record<string,string> = {}) => fetch(`${base}${url}`, { method: 'POST', headers: { cookie, origin: base, 'content-type': 'application/json', ...headers }, body: JSON.stringify({ csrf, ...payload }) });
+    const agent = await post('/api/agents', {}); const agentInfo = await agent.json() as any, secret = agentInfo.secret;
+    await post('/api/voice/settings', { enabled: false, wakeModel: 'hey_hermes', voice: 'en_US-lessac-medium', allowHermesControl: true });
+    const ws = new WebSocket(`${base.replace('http:', 'ws:')}/api/voice/control`, { headers: { cookie, origin: base } });
+    await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    const issue = () => fetch(`${base}/api/agent/voice-control`, { method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' }, body: JSON.stringify({ state: 'listening' }) });
+    const deliveredPromise = issue();
+    const frame = await new Promise<any>(resolve => ws.once('message', data => resolve(JSON.parse(data.toString()))));
+    ws.send(JSON.stringify({ type: 'voice-control-ack', requestId: 'stale-id', status: 'dispatched' }));
+    ws.send(JSON.stringify({ type: 'voice-control-ack', requestId: frame.requestId, status: 'dispatched' }));
+    expect(await (await deliveredPromise).json()).toMatchObject({ accepted: true, status: 'DISPATCHED', requestId: frame.requestId });
+    const timeoutPromise = issue();
+    await new Promise<void>(resolve => ws.once('message', () => resolve()));
+    expect(await (await timeoutPromise).json()).toMatchObject({ accepted: false, status: 'TIMEOUT' });
+    const disconnectPromise = issue();
+    await new Promise<void>(resolve => ws.once('message', () => resolve()));
+    ws.close();
+    expect(await (await disconnectPromise).json()).toMatchObject({ accepted: false, status: 'DISCONNECTED' });
+    await fetch(`${base}/api/agents/${agentInfo.id}`, { method: 'DELETE', headers: { cookie, origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ csrf }) });
+    expect((await issue()).status).toBe(403);
+  }, 10_000);
   it('delivers private owner turn events and one raw PCM frame, then resumes wake only after matching playback ack', async () => {
     const clients = fakes();
     app = await createServer({ database: ':memory:', bootstrapSecret: 'bootstrap', voiceClients: clients as any });

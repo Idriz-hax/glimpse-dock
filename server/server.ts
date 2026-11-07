@@ -145,7 +145,7 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
     const messageForVersion = (type: 'snapshot' | 'state', version: number) => JSON.stringify({ v: 1, type, revision, source, state: stateForVersion(version) });
     const broadcastState = (type: 'state') => { for (const group of sockets.values()) for (const ws of group) if (ws.readyState === 1) ws.send(messageForVersion(type, socketStateVersions.get(ws) ?? 1)); };
   let scryptActive=0; const derive=async(value:string,salt:string)=>{if(scryptActive>=4)throw new Error('busy');scryptActive++;try{return await scrypt(value,salt,64) as Buffer;}finally{scryptActive--;}};
-  const closeSockets=(id:string)=>{for(const ws of sockets.get(id)??[])ws.close(1008,'Session revoked');sockets.delete(id);};
+    const closeSockets=(id:string)=>{for(const ws of sockets.get(id)??[])ws.close(1008,'Session revoked');sockets.delete(id); if (ownerControlSocket && !sockets.get(id)?.has(ownerControlSocket)) { ownerControlSocket = undefined; finishControlRequests('DISCONNECTED'); }};
     if (listener.lan && read('password') && !read('username')) { db.close(); throw new Error('LAN mode requires local owner username upgrade'); }
     const app = Fastify({ logger: { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'] }, bodyLimit: 16_384, trustProxy: false, ...(listener.secure ? { https: listener.https } : {}) });
    await app.register(cookie); await app.register(websocket, { options: { maxPayload: 16_384 }, async preClose(this: FastifyInstance) {
@@ -214,6 +214,8 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
    };
     let activeVoiceSocket: any;
     let ownerControlSocket: any;
+    const controlRequests = new Map<string, { resolve: (status: 'DISPATCHED' | 'DENIED' | 'TIMEOUT' | 'DISCONNECTED') => void; timer: ReturnType<typeof setTimeout> }>();
+    const finishControlRequests = (status: 'DENIED' | 'DISCONNECTED') => { for (const [id, request] of controlRequests) { clearTimeout(request.timer); controlRequests.delete(id); request.resolve(status); } };
    let voiceLease = false;
    const hasActiveVoiceSession = () => voiceLease;
    const voicePreferenceKey = 'voice.settings';
@@ -357,10 +359,16 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       let settings: any; try { settings = JSON.parse(read(voicePreferenceKey)?.value ?? 'null'); } catch { settings = undefined; }
       if (settings?.allowHermesControl !== true) return voiceForbidden(reply);
       if (!ownerControlSocket || ownerControlSocket.readyState !== 1) return { accepted: false, status: 'NO_OWNER_DISPLAY' };
+      if (controlRequests.size >= 32) return { accepted: false, status: 'CONTROL_BUSY' };
       const requestId = randomUUID();
-      try { ownerControlSocket.send(JSON.stringify({ type: 'voice-control', requestId, state: req.body.state })); }
-      catch { return { accepted: false, status: 'NO_OWNER_DISPLAY' }; }
-      return { accepted: true, delivered: true, requestId, status: 'DELIVERED' };
+      const result = new Promise<'DISPATCHED' | 'DENIED' | 'TIMEOUT' | 'DISCONNECTED'>(resolve => {
+        const timer = setTimeout(() => { controlRequests.delete(requestId); resolve('TIMEOUT'); }, 1_500);
+        controlRequests.set(requestId, { resolve, timer });
+        try { ownerControlSocket.send(JSON.stringify({ type: 'voice-control', requestId, state: req.body.state })); }
+        catch { clearTimeout(timer); controlRequests.delete(requestId); resolve('DISCONNECTED'); }
+      });
+      const status = await result;
+      return { accepted: status === 'DISPATCHED', requestId, status };
     });
   app.delete('/api/agents/:digest', async (req: any, reply) => { const owner=auth(req); if(owner?.role!=='owner'||req.body?.csrf!==owner.csrf) return reply.code(403).send({v:1,error:{code:'FORBIDDEN',message:'Forbidden',requestId:'request'}}); db.prepare('UPDATE agents SET revoked=1 WHERE digest=? OR agent_id=?').run(req.params.digest,req.params.digest); return {ok:true}; });
     const commit = (next: typeof state, detail: string, nextSource: string) => {
@@ -521,12 +529,19 @@ export async function createServer(options: Options = {}): Promise<FastifyInstan
       app.get('/api/voice/control', { websocket: true, preValidation: async (req: any, reply: any) => { const owner = ownerVoiceSession(req); if (!owner || !sameOrigin(req.headers.origin, req.headers.host, listener)) return voiceForbidden(reply); req.controlOwner = owner; } }, (socket, req: any) => {
         if (ownerControlSocket?.readyState === 1) { socket.close(1008, 'Owner control page already connected'); return; }
         const owner = req.controlOwner; ownerControlSocket = socket;
+        if (!sockets.has(owner.digest)) sockets.set(owner.digest, new Set()); sockets.get(owner.digest)!.add(socket);
         const timer = setTimeout(() => socket.close(1008, 'Session expired'), Math.max(0, owner.expires - now()));
-        socket.on('message', () => socket.close(1008, 'Read only'));
-        socket.on('close', () => { clearTimeout(timer); if (ownerControlSocket === socket) ownerControlSocket = undefined; });
+        socket.on('message', (data: unknown, isBinary: boolean) => {
+          if (isBinary || typeof data !== 'string' && !Buffer.isBuffer(data)) { socket.close(1008, 'Invalid acknowledgement'); return; }
+          let message: any; try { message = JSON.parse(data.toString()); } catch { socket.close(1008, 'Invalid acknowledgement'); return; }
+          if (!message || Object.keys(message).length !== 3 || message.type !== 'voice-control-ack' || typeof message.requestId !== 'string' || message.requestId.length > 64 || !['dispatched', 'denied'].includes(message.status)) { socket.close(1008, 'Invalid acknowledgement'); return; }
+          const pending = controlRequests.get(message.requestId); if (!pending) return;
+          clearTimeout(pending.timer); controlRequests.delete(message.requestId); pending.resolve(message.status === 'dispatched' ? 'DISPATCHED' : 'DENIED');
+        });
+        socket.on('close', () => { clearTimeout(timer); if (ownerControlSocket === socket) ownerControlSocket = undefined; const group = sockets.get(owner.digest); group?.delete(socket); if (!group?.size) sockets.delete(owner.digest); finishControlRequests('DISCONNECTED'); });
       });
        app.get('/api/stream',{websocket:true,preValidation:async(req:any,reply:any)=>{const session=auth(req);const remote=!isLoopback(normalizeAddress(String(req.raw.socket.remoteAddress??''))??'');if(!session||session.role==='pair'||remote&&session.role!=='owner'||!sameOrigin(req.headers.origin,req.headers.host,listener))return reply.code(403).send(errorBody('FORBIDDEN','Forbidden'));}},(socket,req:any)=>{const session=auth(req); if(!session || session.role==='pair'){socket.close(1008,'Unauthorized');return;} const id=session.digest; const stateVersion = Number(req.query?.stateVersion) === 2 ? 2 : 1; socketStateVersions.set(socket, stateVersion); if(!sockets.has(id)) sockets.set(id,new Set()); sockets.get(id)!.add(socket);socket.send(messageForVersion('snapshot',stateVersion));socket.on('message',()=>socket.close(1008,'Read only'));socket.on('close',()=>{const group=sockets.get(id);group?.delete(socket);if(group?.size===0)sockets.delete(id);});const timer=setTimeout(()=>socket.close(1008,'Session expired'),Math.max(0,session.expires-Date.now()));socket.on('close',()=>clearTimeout(timer));});
-     app.addHook('onClose', async () => { clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
+      app.addHook('onClose', async () => { finishControlRequests('DISCONNECTED'); clearInterval(expiryTimer); if(demoTimer) clearInterval(demoTimer); db.close(); });
    if (process.env.NODE_ENV === 'production') {
      for (const path of ['/', '/admin', '/display']) app.get(path, async (_req, reply) => reply.sendFile('index.html', resolve(process.cwd(), 'dist'), { maxAge: 0, immutable: false }));
    }
