@@ -32,8 +32,7 @@ class PluginTests(unittest.TestCase):
                 client.send_widget.return_value = {"ok": True}
                 register(ctx)
         self.assertEqual(set(ctx.hooks), set(_HOOKS))
-        self.assertEqual(len(ctx.tools), 1)
-        name, toolset, schema, handler = ctx.tools[0]
+        name, toolset, schema, handler = next(tool for tool in ctx.tools if tool[0] == "glimpse_widget")
         self.assertEqual(name, "glimpse_widget")
         self.assertEqual(schema["name"], "glimpse_widget")
         self.assertTrue(schema["description"])
@@ -55,7 +54,8 @@ class PluginTests(unittest.TestCase):
             register(ctx)
         self.assertEqual(set(ctx.hooks), set(_HOOKS))
         self.assertIsNone(ctx.hooks["on_stream_start"]())
-        self.assertEqual(json.loads(ctx.tools[0][3]({"action": "remove", "id": "x"})),
+        widget = next(tool for tool in ctx.tools if tool[0] == "glimpse_widget")
+        self.assertEqual(json.loads(widget[3]({"action": "remove", "id": "x"})),
                          {"ok": False, "error": "CONFIGURATION"})
 
     def test_client_failure_returns_json_command_failed(self):
@@ -64,7 +64,8 @@ class PluginTests(unittest.TestCase):
                 patch("glimpse_dock.GlimpseDockClient") as client_type:
             client_type.return_value.send_widget.side_effect = RuntimeError("failure")
             register(ctx)
-        result = json.loads(ctx.tools[0][3]({"action": "remove", "id": "x"}))
+        widget = next(tool for tool in ctx.tools if tool[0] == "glimpse_widget")
+        result = json.loads(widget[3]({"action": "remove", "id": "x"}))
         self.assertEqual(result, {"ok": False, "error": "COMMAND_FAILED"})
 
     def test_entire_callback_sequence_is_serialized(self):
@@ -106,7 +107,7 @@ class PluginTests(unittest.TestCase):
         with patch.dict(os.environ, {"GLIMPSE_DOCK_AGENT_TOKEN": "token"}), \
                 patch("glimpse_dock.GlimpseDockClient"):
             register(ctx)
-        tool_schema = ctx.tools[0][2]
+        tool_schema = next(tool for tool in ctx.tools if tool[0] == "glimpse_widget")[2]
         self.assertEqual(set(tool_schema), {"name", "description", "parameters"})
         self.assertEqual(tool_schema["name"], "glimpse_widget")
         self.assertTrue(tool_schema["description"])
@@ -127,6 +128,21 @@ class PluginTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertFalse(widget_schema["additionalProperties"])
         self.assertNotIn("owner", widget)
+
+    def test_voice_tool_strict_schema_handler_and_safe_ack(self):
+        ctx = Context()
+        with patch.dict(os.environ, {"GLIMPSE_DOCK_AGENT_TOKEN": "token"}), patch("glimpse_dock.GlimpseDockClient") as factory:
+            factory.return_value.set_voice_state.return_value = {"accepted": True, "requestId": "r", "status": "DISPATCHED"}
+            register(ctx)
+        _, toolset, schema, handler = next(tool for tool in ctx.tools if tool[0] == "glimpse_voice_control")
+        self.assertEqual(toolset, "glimpse_dock")
+        self.assertEqual(schema["parameters"]["required"], ["state"])
+        self.assertFalse(schema["parameters"]["additionalProperties"])
+        self.assertEqual(schema["parameters"]["properties"]["state"]["enum"], ["listening", "paused"])
+        self.assertEqual(json.loads(handler({"state": "listening"}))["status"], "DISPATCHED")
+        factory.return_value.set_voice_state.assert_called_once_with("listening")
+        self.assertEqual(json.loads(handler({"state": "listening", "audio": "x"})),
+                         {"accepted": False, "error": "INVALID_COMMAND"})
 
     def test_transport_failure_is_swallowed(self):
         ctx = Context()

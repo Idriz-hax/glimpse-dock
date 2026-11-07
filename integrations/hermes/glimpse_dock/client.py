@@ -96,6 +96,31 @@ class GlimpseDockClient:
     def send_activity(self, command_type, payload):
         return self._send(command_type, payload)
 
+    def set_voice_state(self, state):
+        if state not in ("listening", "paused"):
+            raise GlimpseDockError("INVALID_COMMAND")
+        data = json.dumps({"state": state}, separators=(",", ":")).encode()
+        req = urllib.request.Request(self.url + "/api/agent/voice-control", data=data, method="POST",
+                                     headers={"Authorization": "Bearer " + self.token,
+                                              "Content-Type": "application/json"})
+        try:
+            with urlopen(req, timeout=min(max(self.timeout, 2.5), 3.0)) as response:
+                result = json.loads(response.read(16385))
+        except urllib.error.HTTPError as exc:
+            try:
+                error = json.loads(exc.read(16385)).get("error", {})
+                code = error.get("code") if isinstance(error, dict) else None
+            except Exception:
+                code = None
+            raise GlimpseDockError(code if isinstance(code, str) else "HTTP_ERROR") from None
+        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError, http.client.HTTPException):
+            raise GlimpseDockError("CONNECTION_ERROR") from None
+        except (ValueError, TypeError):
+            raise GlimpseDockError("INVALID_RESPONSE") from None
+        if not isinstance(result, dict):
+            raise GlimpseDockError("INVALID_RESPONSE")
+        return result
+
     def send_widget(self, command_type, payload, request_id=None):
         _check_widget_payload(payload)
         envelope = {"v": 1, "requestId": request_id or str(uuid.uuid4()),

@@ -10,6 +10,29 @@ from glimpse_dock.client import GlimpseDockClient, GlimpseDockError
 
 
 class ClientTests(unittest.TestCase):
+    @patch("glimpse_dock.client.urlopen")
+    def test_voice_state_exact_route_payload_and_bounded_timeout(self, open_url):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, size=-1): return b'{"accepted":true,"status":"DISPATCHED"}'
+        open_url.return_value = Response()
+        client = GlimpseDockClient(token="secret")
+        result = client.set_voice_state("listening")
+        request, timeout = open_url.call_args.args[0], open_url.call_args.kwargs["timeout"]
+        self.assertEqual(request.full_url, "http://127.0.0.1:4174/api/agent/voice-control")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        self.assertEqual(json.loads(request.data), {"state": "listening"})
+        self.assertGreater(timeout, 1.5)
+        self.assertLessEqual(timeout, 3)
+        self.assertTrue(result["accepted"])
+
+    @patch("glimpse_dock.client.urlopen")
+    def test_voice_state_rejects_invalid_state_without_network(self, open_url):
+        with self.assertRaises(GlimpseDockError):
+            GlimpseDockClient(token="secret").set_voice_state("record")
+        open_url.assert_not_called()
+
     def test_requires_token_and_rejects_unsafe_urls(self):
         with self.assertRaises(ValueError):
             GlimpseDockClient(token="")

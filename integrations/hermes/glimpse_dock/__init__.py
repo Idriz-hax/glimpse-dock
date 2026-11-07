@@ -51,6 +51,13 @@ _WIDGET_SCHEMA = {
     "required": ["action"], "additionalProperties": False,
     },
 }
+_VOICE_SCHEMA = {
+    "name": "glimpse_voice_control",
+    "description": "Request listening or paused state in the opted-in owner display. Dispatch acknowledgement does not confirm microphone state.",
+    "parameters": {"type": "object", "properties": {
+        "state": {"type": "string", "enum": ["listening", "paused"]}},
+        "required": ["state"], "additionalProperties": False},
+}
 
 
 def register(ctx):
@@ -92,3 +99,20 @@ def register(ctx):
             return json.dumps({"ok": False, "error": "COMMAND_FAILED"}, default=str)
 
     ctx.register_tool("glimpse_widget", "glimpse_dock", _WIDGET_SCHEMA, widget_handler)
+
+    def voice_handler(params):
+        if not isinstance(params, dict) or set(params) != {"state"} or params["state"] not in ("listening", "paused"):
+            return json.dumps({"accepted": False, "error": "INVALID_COMMAND"})
+        if client is None:
+            return json.dumps({"accepted": False, "error": "CONFIGURATION"})
+        try:
+            return json.dumps(client.set_voice_state(params["state"]))
+        except GlimpseDockError as exc:
+            code = str(exc)
+            return json.dumps({"accepted": False, "error": code if code in {
+                "NO_OWNER_DISPLAY", "CONTROL_BUSY", "DENIED", "TIMEOUT", "DISCONNECTED",
+                "CONFIGURATION", "CONNECTION_ERROR", "HTTP_ERROR"} else "REQUEST_FAILED"})
+        except Exception:
+            return json.dumps({"accepted": False, "error": "REQUEST_FAILED"})
+
+    ctx.register_tool("glimpse_voice_control", "glimpse_dock", _VOICE_SCHEMA, voice_handler)
