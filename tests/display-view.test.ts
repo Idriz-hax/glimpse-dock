@@ -85,24 +85,25 @@ describe('display render boundary', () => {
     expect(renderDisplay(initialState(), false, true, 'display')).not.toContain('data-hermes-control');
   });
 
-  it('explains active work plainly, shows its observed update, and avoids kiosk keyboard instructions', () => {
+  it('keeps active display copy concise and avoids kiosk keyboard instructions', () => {
     const state = { ...initialState(), activity: 'tool-use' as const, turnStartedAt: 1000, task: 'Using a tool' };
     const html = renderDisplay(state, false);
-    expect(html).toContain('A turn is one round of work by Hermes');
-    expect(html).toContain('Current status: Using a tool');
+    expect(html).not.toContain('A turn is one round');
+    expect(html).not.toContain('Current status:');
+    expect(html).not.toContain('display-kicker');
     expect(html).not.toContain('class="display-update"');
-    expect(html).toContain('Active for');
+    expect(html).toContain('Active ');
     expect(html).not.toContain('F11');
-    expect(renderDisplay({ ...state, task: '' }, false)).toContain('Waiting for Hermes’s next status update');
+    expect(renderDisplay({ ...state, task: '' }, false)).toContain('Waiting for update');
     expect(renderDisplay(initialState(), false)).toContain('Widgets appear here when added');
   });
   it('renders only escaped latest actions belonging to the active turn', () => {
     const state = { ...initialState(), activity: 'tool-use' as const, turnStartedAt: 1000, turnId: 'turn-a', latestAction: { turnId: 'turn-a', text: '<img src=x onerror=alert(1)>' } };
-    expect(renderDisplay(state, false)).toContain('Last observed action: &lt;img src=x onerror=alert(1)&gt;');
-    expect(renderDisplay({ ...state, latestAction: null }, false)).toContain('Waiting for Hermes’s next action update');
-    expect(renderDisplay({ ...state, latestAction: { ...state.latestAction, turnId: 'turn-b' } }, false)).toContain('Waiting for Hermes’s next action update');
-    expect(renderDisplay({ ...state, task: 'Still working', latestAction: null }, false)).toContain('Current status: Still working');
-    expect(renderDisplay({ ...state, task: 'Still working', latestAction: null }, false)).toContain('Waiting for Hermes’s next action update');
+    expect(renderDisplay(state, false)).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(renderDisplay({ ...state, latestAction: null }, false)).toContain('Waiting for update');
+    expect(renderDisplay({ ...state, latestAction: { ...state.latestAction, turnId: 'turn-b' } }, false)).toContain('Waiting for update');
+    expect(renderDisplay({ ...state, task: 'Still working', latestAction: null }, false)).toContain('Waiting for update');
+    expect(renderDisplay({ ...state, task: 'Still working', latestAction: null }, false)).not.toContain('Still working');
     for (const activity of ['idle', 'waiting', 'completed', 'error'] as const) expect(renderDisplay({ ...state, activity }, false)).not.toContain('display-latest-action');
   });
 
@@ -136,7 +137,7 @@ describe('display render boundary', () => {
       expect(html).toContain(`data-activity="${activity}"`);
     });
     expect(renderDisplay({ ...initialState(), progress: null })).not.toContain('display-progress');
-    expect(renderDisplay(initialState())).toContain('64% progress');
+    expect(renderDisplay(initialState())).not.toContain('64% progress');
   });
   it('shows elapsed time only for active work with a known start and places slot empty copy in its section', () => {
     const state = { ...initialState(), turnStartedAt: 1000 };
@@ -158,7 +159,7 @@ describe('display render boundary', () => {
     for (const [toolCategory, label] of [['shell', 'Shell tool'], ['code', 'Code tool'], ['search', 'Search tool'], [null, 'Tool activity']] as const) {
       const html = renderDisplay({ ...state, toolCategory }, false);
       expect(html).toContain(`aria-label="${label}"`);
-      const ambientEnd = html.indexOf('</div><div class="display-kicker"', html.indexOf('class="display-ambient"'));
+      const ambientEnd = html.indexOf('</div>', html.indexOf('class="display-ambient"'));
       expect(html.indexOf('class="display-tool-context"')).toBeGreaterThan(ambientEnd);
     }
     expect(renderDisplay({ ...state, toolCategory: 'shell' }, false)).toContain('data-tool-category="shell"');
@@ -172,7 +173,7 @@ describe('display render boundary', () => {
   it('supports both display styles and a disconnected status', () => {
     expect(renderDisplay({ ...initialState(), displayStyle: 'quiet' })).toContain('display--quiet');
     expect(renderDisplay({ ...initialState(), displayStyle: 'ambient' })).toContain('display--ambient');
-    expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).toContain('Current status: Keep this task text');
+    expect(renderDisplay({ ...initialState(), task: 'Keep this task text', activity: 'waiting' })).not.toContain('Current status:');
     expect(renderDisplay(initialState(), true, false)).toContain('Connection lost');
   });
 

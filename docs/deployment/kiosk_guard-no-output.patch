@@ -1,0 +1,81 @@
+--- kiosk_guard.py
++++ kiosk_guard.py
+@@ -1,2 +1,3 @@
+ import os
++import glob
+ import signal as _signal
+@@ -1,3 +1,4 @@
+ POLL_S = 3
++DRM_POLL_S = 30
+ CDP_TIMEOUT_S = 45     # how long after launch to wait for CDP before declaring a hang
+ RESTART_DELAY_S = 3
+@@ -1,7 +1,36 @@
+ def cdp_up():
+     try:
+         with urllib.request.urlopen(CDP_URL, timeout=3) as r:
+             return r.status == 200
+     except Exception:
+         return False
++def drm_output_statuses():
++    """Return readable DRM connector statuses; missing nodes mean no proof of a display."""
++    paths = set()
++    for pattern in ("/sys/class/drm/card-[A-Z]-*/status", "/sys/class/drm/card*-*/status"):
++        paths.update(glob.glob(pattern))
++    statuses = []
++    for path in sorted(paths):
++        try:
++            with open(path) as f:
++                statuses.append((path, f.read().strip().lower()))
++        except OSError:
++            continue
++    return statuses
++
++def drm_output_connected():
++    return any(status == "connected" for _, status in drm_output_statuses())
++
++def wait_for_connected_drm_output():
++    announced = False
++    while True:
++        if drm_output_connected():
++            if announced:
++                log("connected DRM output detected; resuming kiosk launch")
++            return
++        if not announced:
++            log("no connected DRM output; standing down and polling every 30s")
++            announced = True
++        time.sleep(DRM_POLL_S)
++
+ def find_browser_pids():
+@@ -1,5 +1,6 @@
+ def relaunch():
+     global proc, launch_log, instance_start, cdp_healthy
++    wait_for_connected_drm_output()
+     kill_instance()
+     time.sleep(RESTART_DELAY_S)
+     launch_log = os.path.join(EVIDENCE_DIR, f"kiosk-stderr-launch-{int(time.time())}.log")
+@@ -1,4 +1,15 @@
+ def handle_failure(kind, exit_code, pid):
++    global proc, instance_start, cdp_healthy
++    if not drm_output_connected():
++        log("no connected DRM output; skipping failure bundle and crash count")
++        kill_instance()
++        proc = None
++        instance_start = None
++        cdp_healthy = False
++        wait_for_connected_drm_output()
++        relaunch()
++        post_relaunch_pair(None)
++        return
+     d = capture_evidence(kind, exit_code, pid)
+     log(f"{'HANG_CAPTURED' if kind == 'hang' else 'CRASH_CAPTURED'} {d}")
+     relaunch()
+@@ -1,4 +1,5 @@
+     else:
+         log("no healthy browser; launching initial instance")
+         relaunch()
++        post_relaunch_pair(None)
+     while True:
+@@ -1,2 +1,2 @@
+-if name == "main":
++if __name__ == "__main__":
+     main()
